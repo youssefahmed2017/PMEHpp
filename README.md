@@ -16,6 +16,7 @@ Examples:
 - `examples/double.pmeh`: asks for a number and doubles it
 - `examples/square.pmeh`: a function
 - `examples/factorial.pmeh`: a function that calls itself (recursion)
+- `examples/sum_list.pmeh`: a list
 
 ## Beg for mercy
 
@@ -24,7 +25,7 @@ Examples:
 
 ## Errors
 
-Error reports are scrambled on purpose (see SYNTAX.md section 9). For a plain one:
+Error reports are scrambled on purpose (see SYNTAX.md section 10). For a plain one:
 
     python pmeh.py --i-give-up program.pmeh
 

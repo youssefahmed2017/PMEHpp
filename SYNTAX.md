@@ -32,6 +32,8 @@ Every number is turned upside down: read the digits right to left, then flip eac
 | add | `add rax, rbx` | `01100001 01100100 01100100` |
 | sub | `sub rax, rbx` | `01110011 01110101 01100010` |
 | read | `mov rax, 0; mov rdi, 0; lea rsi, [buf]; mov rdx, MAXLEN; syscall` | `01110010 01100101 01100001 01100100` |
+| store | `mov [rbx + rcx], rax` | `01110011 01110100 01101111 01110010 01100101` |
+| load | `mov rax, [rbx + rcx]` | `01101100 01101111 01100001 01100100` |
 | mul | `imul rax, rbx` | `01101101 01110101 01101100` |
 | div | `cqo; idiv rbx` (rounds toward zero) | `01100100 01101001 01110110` |
 
@@ -125,7 +127,31 @@ size with if-statements first. See `examples/double.pmeh`.
 - While a function runs, the caller's variables are **frozen**: they don't age.
 - Recursion is allowed, up to 50 calls deep. After that: stack overflow.
 
-## 9. Error reports
+## 9. Lists
+```
+<<startlist<HEAP>>type:{int64}name:{xs}bytes:{91}>>/>>
+```
+- The size is in **bytes**, not items (`91` = 16 bytes = 2 `int64` items). Item sizes:
+  `int8` 1, `int16` 2, `int32` 4, `int64` 8. The size must divide evenly into items.
+- The size is fixed forever, and there's no way to ask for it. Remember it yourself.
+- Items are reached by **byte offset**: for `int64`, item 0 is at 0, item 1 at 8, item 2 at 16 (`91`).
+  Offsets are upside-down numbers too, so offsets with 3, 4 or 7 (like 24 and 32) must be calculated.
+
+Write and read:
+```
+<<startfunc<FROMBUILTIN><<asm:{mov [rbx + rcx], rax}>>mco:{01110011 01110100 01101111 01110010 01100101}<<>>$xs,8,$x>>/>>
+<<startfunc<FROMBUILTIN><<asm:{mov rax, [rbx + rcx]}>>mco:{01101100 01101111 01100001 01100100}<<>>$xs,8<<into>>$y>>/>>
+```
+- An offset that isn't a multiple of the item size: *misaligned memory access*.
+- An offset outside the list: *Segmentation fault (core dumped)*.
+- **Garbage:** items you never stored hold whatever was lying around in memory: a random
+  number, or junk like `banana` or `notexisten<<>>`. Junk can be loaded, stored and printed,
+  but doing math or comparisons with it is a punishment. Every run is different.
+- The whole list forgets at once: touching any item keeps it alive.
+- Lists are passed to functions **by reference**: the function changes the real list.
+- Lists can't be printed, copied into variables, or used in math. Work with items.
+
+## 10. Error reports
 Every error report contains everything you need. None of it is easy to read.
 
 - **Location:** the line number is counted **from the bottom** of the file (blank lines count),

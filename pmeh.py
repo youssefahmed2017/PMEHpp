@@ -22,6 +22,10 @@ VALIDATION_LINE = ('<EXCPROGRAM>VALIDATE:COMMNT"I\'d rather die than code in '
 MEMORY_SPAN = 3          # a variable unused for this many executed lines is erased
 MAX_STEPS = 1_000_000    # protection against infinite suffering
 MAX_DEPTH = 50           # how many function calls deep you may go
+MAX_LIST_BYTES = 1_000_000
+GARBAGE_JUNK = ["banana", "notexisten<<>>", "undefined", "null", "NaN", "@i-wanna-cry",
+                "<<startfunc<", "help me", "segfault", "}}{{", "0xDEADBEEF", "your homework",
+                "<EXCPROGRAM>", "nothing", "42?", "AAAAAAAA"]
 PARAM_REGISTERS = ["rdi", "rsi", "rdx", "rcx", "r8", "r9"]   # Linux x86-64 calling convention
 
 FLIP = {"0": "0", "1": "1", "2": "5", "5": "2", "6": "9", "8": "8", "9": "6"}
@@ -36,7 +40,9 @@ MATH_ASM = {
     "mul": "imul rax, rbx",
     "div": "cqo; idiv rbx",
 }
-BUILTINS = {"print", "read", *MATH_ASM}
+STORE_ASM = "mov [rbx + rcx], rax"
+LOAD_ASM = "mov rax, [rbx + rcx]"
+BUILTINS = {"print", "read", "store", "load", *MATH_ASM}
 CMP_ASM = re.compile(r"cmp rax, rbx; (j[a-z]+) (\w+)")
 JUMPS = {  # jump is TAKEN when this is true
     "jg": lambda a, b: a > b,
@@ -52,6 +58,8 @@ FUNC_RE = re.compile(r"<<startfunc<FROMBUILTIN><<asm:\{(?P<asm>.*?)\}>>mco:\{(?P
                      r"<<>>(?P<args>.*?)(?:<<into>>\$(?P<into>" + NAME + r"))?>>/>>")
 VAR_RE = re.compile(r"<<startvar<STACK>>type:\{(?P<type>[^}]*)\}name:\{(?P<name>[^}]*)\}"
                     r"<<>>(?P<value>.*?)>>/>>")
+LIST_RE = re.compile(r"<<startlist<HEAP>>type:\{(?P<type>[^}]*)\}name:\{(?P<name>[^}]*)\}"
+                     r"bytes:\{(?P<bytes>[^}]*)\}>>/>>")
 IF_RE = re.compile(r"<<startif<<asm:\{(?P<asm>.*?)\}>>(?P<args>.*?)>>")
 LOOP_RE = re.compile(r"<<startloop<<asm:\{(?P<asm>.*?)\}>>(?P<args>.*?)>>")
 DEF_RE = re.compile(r"<<definefunc<USER>>mco:\{(?P<name>[^}]*)\}params:\{(?P<params>[^}]*)\}>>")
@@ -76,6 +84,17 @@ COMPLIMENTS = [
     "Program finished. Don't let it go to your head.",
     "No errors. Statistically, that was luck.",
 ]
+
+
+class Garbage(str):
+    """Whatever was lying around in memory. Not a number. Possibly not anything."""
+
+
+class PMEHList:
+    def __init__(self, type_, items):
+        self.type = type_
+        self.items = items
+        self.item_bytes = TYPES[type_] // 8
 
 
 class Punishment(Exception):
@@ -109,6 +128,8 @@ def normalize_asm(asm):
     parts = []
     for part in asm.split(";"):
         part = re.sub(r"\s*,\s*", ", ", part.strip().lower())
+        part = re.sub(r"\s*\+\s*", " + ", part)
+        part = re.sub(r"\[\s*", "[", re.sub(r"\s*\]", "]", part))
         parts.append(" ".join(part.split()))
     return "; ".join(parts)
 
@@ -133,6 +154,13 @@ def parse_two_values(args, lineno, what):
     parts = args.split(",")
     if len(parts) != 2:
         raise Punishment(lineno, f"{what} needs exactly two values, like $x,1.")
+    return [parse_value(p, lineno) for p in parts]
+
+
+def parse_values(args, lineno, what, count, example):
+    parts = args.split(",")
+    if len(parts) != count:
+        raise Punishment(lineno, f"{what} needs exactly {count} values, like {example}.")
     return [parse_value(p, lineno) for p in parts]
 
 
@@ -198,6 +226,15 @@ def parse_line(lineno, text):
         return Stmt(lineno, "var", {"type": m["type"], "name": m["name"],
                                     "value": parse_value(m["value"], lineno)})
 
+    m = LIST_RE.fullmatch(text)
+    if m:
+        if m["type"] not in TYPES:
+            raise Punishment(lineno, f"'{m['type']}' is not a type. Pick one: {', '.join(TYPES)}.")
+        if not re.fullmatch(NAME, m["name"]):
+            raise Punishment(lineno, f"'{m['name']}' is not a valid list name.")
+        return Stmt(lineno, "list", {"type": m["type"], "name": m["name"],
+                                     "bytes": parse_value(m["bytes"], lineno)})
+
     for kind, regex, label in (("if", IF_RE, "skip"), ("loop", LOOP_RE, "end")):
         m = regex.fullmatch(text)
         if m:
@@ -245,6 +282,19 @@ def parse_func(lineno, m):
         if not m["into"]:
             raise Punishment(lineno, "you read input and threw it away. Add <<into>>$variable.")
         return Stmt(lineno, "read", {"maxlen": int(asm_match[1]), "into": m["into"]})
+
+    if name in ("store", "load"):
+        wanted = STORE_ASM if name == "store" else LOAD_ASM
+        if asm != wanted:
+            raise Punishment(lineno, f"wrong asm for {name}. It must be: {wanted}")
+        if name == "store":
+            if m["into"]:
+                raise Punishment(lineno, "store gives nothing back. Drop the <<into>>.")
+            return Stmt(lineno, "store", {"values": parse_values(m["args"], lineno, "store", 3, "$xs,8,$x")})
+        if not m["into"]:
+            raise Punishment(lineno, "you loaded an item and threw it away. Add <<into>>$variable.")
+        return Stmt(lineno, "load", {"values": parse_values(m["args"], lineno, "load", 2, "$xs,8"),
+                                     "into": m["into"]})
 
     if asm != MATH_ASM[name]:
         raise Punishment(lineno, f"wrong asm for {name}. It must be: {MATH_ASM[name]}")
@@ -366,8 +416,9 @@ def link_calls(program):
 # ---------------------------------------------------------------- machine
 
 class Machine:
-    def __init__(self, program, out, inp=None):
+    def __init__(self, program, out, inp=None, rng=None):
         self.program = program
+        self.rng = rng if rng is not None else random.Random()
         self.out = out
         self.inp = inp if inp is not None else sys.stdin
         self.pending = ""     # typed characters that no read has taken yet
@@ -395,7 +446,50 @@ class Machine:
         kind, x = v
         return x if kind == "num" else self.touch(x, lineno)[0]
 
+    def number(self, v, lineno):
+        """A value that must be a real number."""
+        value = self.value(v, lineno)
+        if isinstance(value, PMEHList):
+            raise Punishment(lineno, f"${v[1]} is a list, not a number. Load an item out of it first.")
+        if isinstance(value, Garbage):
+            raise Punishment(lineno, f"you tried to use {str(value)!r} as a number. That's garbage "
+                             "from a list item you never stored anything in.")
+        return value
+
+    def assign(self, name, value, lineno):
+        entry = self.touch(name, lineno)
+        if entry[1] == "list":
+            raise Punishment(lineno, f"${name} is a list. You can't pour a single value into it. Use store.")
+        if isinstance(value, PMEHList):
+            raise Punishment(lineno, f"a list can't be put into the variable ${name}.")
+        self.check_range(value, entry[1], lineno)
+        entry[0] = value
+
+    def get_list(self, v, lineno):
+        value = self.value(v, lineno)
+        if not isinstance(value, PMEHList):
+            raise Punishment(lineno, "the first value must be a list. That isn't one.")
+        return value
+
+    def item_index(self, lst, v, lineno):
+        offset = self.number(v, lineno)
+        if offset % lst.item_bytes:
+            raise Punishment(lineno, f"misaligned memory access: offset {offset} is not a multiple of "
+                             f"{lst.item_bytes} (the size of one {lst.type}).")
+        if not 0 <= offset < len(lst.items) * lst.item_bytes:
+            raise Punishment(lineno, f"Segmentation fault (core dumped). Offset {offset} is outside "
+                             f"the list's {len(lst.items) * lst.item_bytes} bytes.")
+        return offset // lst.item_bytes
+
+    def garbage(self, type_):
+        if self.rng.random() < 0.5:
+            return Garbage(self.rng.choice(GARBAGE_JUNK))
+        bits = TYPES[type_]
+        return self.rng.randint(-(2 ** (bits - 1)), 2 ** (bits - 1) - 1)
+
     def check_range(self, value, type_, lineno):
+        if isinstance(value, Garbage):
+            return                                    # garbage fits anywhere, sadly
         bits = TYPES[type_]
         low, high = -(2 ** (bits - 1)), 2 ** (bits - 1) - 1
         if not low <= value <= high:
@@ -414,6 +508,8 @@ class Machine:
 
             if s.kind == "var":
                 value = self.value(d["value"], s.lineno)
+                if isinstance(value, PMEHList):
+                    raise Punishment(s.lineno, "a list can't be copied into a variable.")
                 self.check_range(value, d["type"], s.lineno)
                 self.vars[d["name"]] = [value, d["type"], self.step]
                 self.forgotten.discard(d["name"])
@@ -421,21 +517,43 @@ class Machine:
             elif s.kind == "print":
                 self.print(s)
 
+            elif s.kind == "list":
+                size = self.number(d["bytes"], s.lineno)
+                item_bytes = TYPES[d["type"]] // 8
+                if size <= 0:
+                    raise Punishment(s.lineno, f"a list of {size} bytes. Ambitious.")
+                if size % item_bytes:
+                    raise Punishment(s.lineno, f"{size} bytes doesn't divide into {d['type']} items "
+                                     f"({item_bytes} bytes each).")
+                if size > MAX_LIST_BYTES:
+                    raise Punishment(s.lineno, f"out of memory. Nobody needs {size} bytes.")
+                items = [self.garbage(d["type"]) for _ in range(size // item_bytes)]
+                self.vars[d["name"]] = [PMEHList(d["type"], items), "list", self.step]
+                self.forgotten.discard(d["name"])
+
+            elif s.kind == "store":
+                lst = self.get_list(d["values"][0], s.lineno)
+                index = self.item_index(lst, d["values"][1], s.lineno)
+                value = self.value(d["values"][2], s.lineno)
+                if isinstance(value, PMEHList):
+                    raise Punishment(s.lineno, "you can't store a list inside a list.")
+                self.check_range(value, lst.type, s.lineno)
+                lst.items[index] = value
+
+            elif s.kind == "load":
+                lst = self.get_list(d["values"][0], s.lineno)
+                index = self.item_index(lst, d["values"][1], s.lineno)
+                self.assign(d["into"], lst.items[index], s.lineno)
+
             elif s.kind == "read":
-                value = self.read(s)
-                entry = self.touch(s.data["into"], s.lineno)
-                self.check_range(value, entry[1], s.lineno)
-                entry[0] = value
+                self.assign(d["into"], self.read(s), s.lineno)
 
             elif s.kind == "math":
-                a, b = (self.value(v, s.lineno) for v in d["values"])
-                result = self.math(d["op"], a, b, s.lineno)
-                entry = self.touch(d["into"], s.lineno)
-                self.check_range(result, entry[1], s.lineno)
-                entry[0] = result
+                a, b = (self.number(v, s.lineno) for v in d["values"])
+                self.assign(d["into"], self.math(d["op"], a, b, s.lineno), s.lineno)
 
             elif s.kind in ("if", "loop"):
-                a, b = (self.value(v, s.lineno) for v in d["values"])
+                a, b = (self.number(v, s.lineno) for v in d["values"])
                 if JUMPS[d["jump"]](a, b):            # jump taken -> skip the block
                     if s.kind == "loop":
                         pc = d["end"] + 1
@@ -475,8 +593,11 @@ class Machine:
         func = self.program[d["target"]]
         new_vars = {}
         for name, value in zip(func.data["params"], args):
-            self.check_range(value, "int64", s.lineno)
-            new_vars[name] = [value, "int64", self.step]
+            if isinstance(value, PMEHList):           # lists are passed by reference
+                new_vars[name] = [value, "list", self.step]
+            else:
+                self.check_range(value, "int64", s.lineno)
+                new_vars[name] = [value, "int64", self.step]
         self.frames.append({"return_to": pc, "vars": self.vars, "forgotten": self.forgotten,
                             "into": d["into"], "step": self.step, "lineno": s.lineno,
                             "def": d["target"]})
@@ -490,9 +611,7 @@ class Machine:
         self.vars, self.forgotten = frame["vars"], frame["forgotten"]
         for entry in self.vars.values():            # the caller's variables were frozen
             entry[2] += elapsed
-        entry = self.touch(frame["into"], frame["lineno"])
-        self.check_range(value, entry[1], frame["lineno"])
-        entry[0] = value
+        self.assign(frame["into"], value, frame["lineno"])
         return frame["return_to"]
 
     def math(self, op, a, b, lineno):
@@ -536,7 +655,10 @@ class Machine:
                                      f"but you wrote [{x}word].")
                 text += " "
             else:
-                text += str(self.touch(x, s.lineno)[0])
+                value = self.touch(x, s.lineno)[0]
+                if isinstance(value, PMEHList):
+                    raise Punishment(s.lineno, f"${x} is a list. Print its items one at a time.")
+                text += str(value)
         if s.data["length"] != len(text):
             raise Punishment(s.lineno, f"mov rdx, {s.data['length']} but the text {text!r} "
                              f"is {len(text)} characters long.")

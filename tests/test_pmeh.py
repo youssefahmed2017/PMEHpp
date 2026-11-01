@@ -159,6 +159,93 @@ class Functions(unittest.TestCase):
         self.assertPunished(prog(RET % "1"), "not in a function")
 
 
+LIST = "<<startlist<HEAP>>type:{%s}name:{xs}bytes:{%s}>>/>>"
+STORE = ("<<startfunc<FROMBUILTIN><<asm:{mov [rbx + rcx], rax}>>"
+         "mco:{01110011 01110100 01101111 01110010 01100101}<<>>%s>>/>>")
+LOAD = ("<<startfunc<FROMBUILTIN><<asm:{mov rax, [rbx + rcx]}>>"
+        "mco:{01101100 01101111 01100001 01100100}<<>>%s<<into>>$%s>>/>>")
+
+
+class FakeRng:
+    """Makes every unstored list item the same piece of garbage."""
+    def __init__(self, junk):
+        self.junk = junk
+
+    def random(self):
+        return 0.0
+
+    def choice(self, options):
+        return self.junk
+
+
+def run_rng(source, rng):
+    out = io.StringIO()
+    pmeh.Machine(pmeh.parse(source), out, io.StringIO(), rng).run()
+    return out.getvalue()
+
+
+class Lists(unittest.TestCase):
+    def assertPunished(self, source, fragment):
+        with self.assertRaises(pmeh.Punishment) as ctx:
+            run(source)
+        self.assertIn(fragment, ctx.exception.message)
+
+    def test_sum_example(self):
+        self.assertEqual(run_file("sum_list.pmeh"), "11\n")
+
+    def test_byte_offsets_and_upside_down(self):
+        # 16 bytes written 91; item 1 is at byte 8; value 21 means 15
+        src = prog(LIST % ("int64", "91"), STORE % "$xs,8,21", VAR % ("a", "0"),
+                   LOAD % ("$xs,8", "a"), PRINT % (2, "$a"))
+        self.assertEqual(run(src), "15\n")
+
+    def test_int8_items_are_one_byte(self):
+        src = prog(LIST % ("int8", "5"), STORE % "$xs,1,9", VAR % ("a", "0"),
+                   LOAD % ("$xs,1", "a"), PRINT % (1, "$a"))
+        self.assertEqual(run(src), "6\n")
+
+    def test_segfault(self):
+        self.assertPunished(prog(LIST % ("int64", "91"), VAR % ("a", "0"),
+                                 LOAD % ("$xs,91", "a")), "Segmentation fault")
+
+    def test_misaligned(self):
+        self.assertPunished(prog(LIST % ("int64", "91"), VAR % ("a", "0"),
+                                 LOAD % ("$xs,5", "a")), "misaligned")
+
+    def test_size_must_fit_items(self):
+        self.assertPunished(prog(LIST % ("int64", "21")), "doesn't divide")
+
+    def test_garbage_junk_breaks_math(self):
+        src = prog(LIST % ("int64", "8"), VAR % ("a", "0"), LOAD % ("$xs,0", "a"),
+                   ADD % ("$a,1", "a"))
+        with self.assertRaises(pmeh.Punishment) as ctx:
+            run_rng(src, FakeRng("banana"))
+        self.assertIn("'banana'", ctx.exception.message)
+
+    def test_garbage_can_be_printed(self):
+        src = prog(LIST % ("int64", "8"), VAR % ("a", "0"), LOAD % ("$xs,0", "a"),
+                   PRINT % (14, "$a"))
+        self.assertEqual(run_rng(src, FakeRng("notexisten<<>>")), "notexisten<<>>\n")
+
+    def test_print_list_not_allowed(self):
+        self.assertPunished(prog(LIST % ("int64", "8"), PRINT % (1, "$xs")), "one at a time")
+
+    def test_math_with_list_not_allowed(self):
+        self.assertPunished(prog(LIST % ("int64", "8"), VAR % ("a", "0"),
+                                 ADD % ("$xs,1", "a")), "is a list")
+
+    def test_whole_list_forgets(self):
+        self.assertPunished(prog(LIST % ("int64", "8"), VAR % ("a", "0"), VAR % ("b", "0"),
+                                 VAR % ("c", "0"), LOAD % ("$xs,0", "a")), "forgot itself")
+
+    def test_lists_pass_by_reference(self):
+        fill = "01100110 01101001 01101100 01101100"   # "fill"
+        src = prog(DEF % (fill, "rdi:$l"), STORE % "$l,0,6", RET % "0", END,
+                   LIST % ("int64", "8"), VAR % ("r", "0"), CALL % ("fill", fill, "$xs", "r"),
+                   LOAD % ("$xs,0", "r"), PRINT % (1, "$r"))
+        self.assertEqual(run(src), "9\n")
+
+
 class ErrorReports(unittest.TestCase):
     def test_upside_down_line_numbers(self):
         self.assertEqual(pmeh.upside_down(15), "21")

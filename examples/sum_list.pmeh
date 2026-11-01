@@ -1,0 +1,10 @@
+<<startlist<HEAP>>type:{int64}name:{xs}bytes:{91}>>/>>
+<<startfunc<FROMBUILTIN><<asm:{mov [rbx + rcx], rax}>>mco:{01110011 01110100 01101111 01110010 01100101}<<>>$xs,0,5>>/>>
+<<startfunc<FROMBUILTIN><<asm:{mov [rbx + rcx], rax}>>mco:{01110011 01110100 01101111 01110010 01100101}<<>>$xs,8,6>>/>>
+<<startvar<STACK>>type:{int64}name:{a}<<>>0>>/>>
+<<startfunc<FROMBUILTIN><<asm:{mov rax, [rbx + rcx]}>>mco:{01101100 01101111 01100001 01100100}<<>>$xs,0<<into>>$a>>/>>
+<<startvar<STACK>>type:{int64}name:{b}<<>>0>>/>>
+<<startfunc<FROMBUILTIN><<asm:{mov rax, [rbx + rcx]}>>mco:{01101100 01101111 01100001 01100100}<<>>$xs,8<<into>>$b>>/>>
+<<startfunc<FROMBUILTIN><<asm:{add rax, rbx}>>mco:{01100001 01100100 01100100}<<>>$a,$b<<into>>$a>>/>>
+<<startfunc<FROMBUILTIN><<asm:{mov rax, 1; mov rdi, 1; lea rsi, [msg]; mov rdx, 2; syscall}>>mco:{01110000 01110010 01101001 01101110 01110100}<<>>$a>>/>>
+<EXCPROGRAM>VALIDATE:COMMNT"I'd rather die than code in this programming language"[NOMERCYGRANTED]
