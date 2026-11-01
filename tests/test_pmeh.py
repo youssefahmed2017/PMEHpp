@@ -82,6 +82,83 @@ class Input(unittest.TestCase):
         self.assertIn("Overflow", ctx.exception.message)
 
 
+SQ = "01110011 01110001 01110101 01100001 01110010 01100101"   # square
+MUL = "<<startfunc<FROMBUILTIN><<asm:{imul rax, rbx}>>mco:{01101101 01110101 01101100}<<>>%s<<into>>$%s>>/>>"
+ADD = "<<startfunc<FROMBUILTIN><<asm:{add rax, rbx}>>mco:{01100001 01100100 01100100}<<>>%s<<into>>$%s>>/>>"
+DEF = "<<definefunc<USER>>mco:{%s}params:{%s}>>"
+RET = "<<return<<asm:{ret}>>%s>>/>>"
+END = "<<enddefine>>/>>"
+CALL = "<<startfunc<FROMUSER><<asm:{call %s}>>mco:{%s}<<>>%s<<into>>$%s>>/>>"
+VAR = "<<startvar<STACK>>type:{int64}name:{%s}<<>>%s>>/>>"
+
+
+def square_def(params="rdi:$a", body=None):
+    body = body if body is not None else [MUL % ("$a,$a", "a"), RET % "$a"]
+    return [DEF % (SQ, params), *body, END]
+
+
+def prog(*lines):
+    return "\n".join([*lines, pmeh.VALIDATION_LINE])
+
+
+class Functions(unittest.TestCase):
+    def assertPunished(self, source, fragment):
+        with self.assertRaises(pmeh.Punishment) as ctx:
+            run(source)
+        self.assertIn(fragment, ctx.exception.message)
+
+    def test_square_example(self):
+        self.assertEqual(run_file("square.pmeh"), "4\n")
+
+    def test_factorial_example(self):
+        self.assertEqual(run_file("factorial.pmeh"), "5!=120\n")
+
+    def test_two_parameters(self):
+        add_name = "01100001 01100100 01100100 01011111"   # "add_"
+        src = prog(DEF % (add_name, "rdi:$a,rsi:$b"), ADD % ("$a,$b", "a"), RET % "$a", END,
+                   VAR % ("x", "0"), CALL % ("add_", add_name, "5,6", "x"), PRINT % (2, "$x"))
+        self.assertEqual(run(src), "11\n")   # 5 means 2, 6 means 9
+
+    def test_caller_variables_freeze_during_call(self):
+        long_body = [VAR % ("p", "$a"), VAR % ("q", "$a"), VAR % ("r", "$a"), VAR % ("s", "$a"),
+                     MUL % ("$a,$a", "a"), RET % "$a"]
+        src = prog(*square_def(body=long_body), VAR % ("keep", "1"), VAR % ("x", "5"),
+                   CALL % ("square", SQ, "$x", "x"), PRINT % (1, "$keep"))
+        self.assertEqual(run(src), "1\n")
+
+    def test_wrong_register_order(self):
+        self.assertPunished(prog(*square_def(params="rsi:$a"), VAR % ("x", "1"),
+                                 CALL % ("square", SQ, "$x", "x")), "must go in rdi")
+
+    def test_definition_not_at_top(self):
+        self.assertPunished(prog(VAR % ("x", "1"), *square_def()), "at the TOP")
+
+    def test_missing_return(self):
+        self.assertPunished(prog(*square_def(body=[MUL % ("$a,$a", "a")]), VAR % ("x", "1"),
+                                 CALL % ("square", SQ, "$x", "x")), "without returning")
+
+    def test_call_name_mismatch(self):
+        self.assertPunished(prog(*square_def(), VAR % ("x", "1"),
+                                 CALL % ("squar", SQ, "$x", "x")), "Pick one")
+
+    def test_wrong_argument_count(self):
+        self.assertPunished(prog(*square_def(), VAR % ("x", "1"),
+                                 CALL % ("square", SQ, "$x,$x", "x")), "takes 1 argument")
+
+    def test_no_globals(self):
+        body = [MUL % ("$a,$x", "a"), RET % "$a"]
+        self.assertPunished(prog(*square_def(body=body), VAR % ("x", "1"),
+                                 CALL % ("square", SQ, "$x", "x")), "never existed")
+
+    def test_stack_overflow(self):
+        body = [CALL % ("square", SQ, "$a", "a"), RET % "$a"]
+        self.assertPunished(prog(*square_def(body=body), VAR % ("x", "1"),
+                                 CALL % ("square", SQ, "$x", "x")), "stack overflow")
+
+    def test_return_outside_function(self):
+        self.assertPunished(prog(RET % "1"), "not in a function")
+
+
 class Numbers(unittest.TestCase):
     def test_flips(self):
         cases = {"21": 15, "01": 10, "5": 2, "6": 9, "56": 92, "-21": -15, "0": 0}

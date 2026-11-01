@@ -19,6 +19,8 @@ VALIDATION_LINE = ('<EXCPROGRAM>VALIDATE:COMMNT"I\'d rather die than code in '
                    'this programming language"[NOMERCYGRANTED]')
 MEMORY_SPAN = 3          # a variable unused for this many executed lines is erased
 MAX_STEPS = 1_000_000    # protection against infinite suffering
+MAX_DEPTH = 50           # how many function calls deep you may go
+PARAM_REGISTERS = ["rdi", "rsi", "rdx", "rcx", "r8", "r9"]   # Linux x86-64 calling convention
 
 FLIP = {"0": "0", "1": "1", "2": "5", "5": "2", "6": "9", "8": "8", "9": "6"}
 BANNED_DIGITS = "347"
@@ -50,6 +52,10 @@ VAR_RE = re.compile(r"<<startvar<STACK>>type:\{(?P<type>[^}]*)\}name:\{(?P<name>
                     r"<<>>(?P<value>.*?)>>/>>")
 IF_RE = re.compile(r"<<startif<<asm:\{(?P<asm>.*?)\}>>(?P<args>.*?)>>")
 LOOP_RE = re.compile(r"<<startloop<<asm:\{(?P<asm>.*?)\}>>(?P<args>.*?)>>")
+DEF_RE = re.compile(r"<<definefunc<USER>>mco:\{(?P<name>[^}]*)\}params:\{(?P<params>[^}]*)\}>>")
+RETURN_RE = re.compile(r"<<return<<asm:\{(?P<asm>.*?)\}>>(?P<value>.*?)>>/>>")
+CALL_RE = re.compile(r"<<startfunc<FROMUSER><<asm:\{(?P<asm>.*?)\}>>mco:\{(?P<name>[^}]*)\}"
+                     r"<<>>(?P<args>.*?)(?:<<into>>\$(?P<into>" + NAME + r"))?>>/>>")
 PRINT_TOKEN = re.compile(r'"(?P<text>[^"]*)"|\[(?P<space>\d+)word\]|\$(?P<var>' + NAME + r")")
 
 INSULTS = [
@@ -144,6 +150,7 @@ def parse(source):
             raise Punishment(lineno, "the validation line goes at the END. You can't give up halfway.")
         program.append(parse_line(lineno, text))
     link_blocks(program)
+    link_calls(program)
     return program
 
 
@@ -154,6 +161,31 @@ def parse_line(lineno, text):
         return Stmt(lineno, "endif")
     if text == "<<endloop>>/>>":
         return Stmt(lineno, "endloop")
+    if text == "<<enddefine>>/>>":
+        return Stmt(lineno, "enddefine")
+
+    m = DEF_RE.fullmatch(text)
+    if m:
+        return parse_def(lineno, m)
+
+    m = RETURN_RE.fullmatch(text)
+    if m:
+        if normalize_asm(m["asm"]) != "ret":
+            raise Punishment(lineno, "the return asm is just: ret")
+        return Stmt(lineno, "return", {"value": parse_value(m["value"], lineno)})
+
+    m = CALL_RE.fullmatch(text)
+    if m:
+        name = decode_binary(m["name"], lineno)
+        asm = re.fullmatch(r"call (\S+)", normalize_asm(m["asm"]))
+        if not asm:
+            raise Punishment(lineno, f"the asm for calling a function is: call {name}")
+        if asm[1] != name.lower():
+            raise Punishment(lineno, f"your asm calls '{asm[1]}' but your binary spells '{name}'. Pick one.")
+        if not m["into"]:
+            raise Punishment(lineno, f"{name} returns a value and you threw it away. Add <<into>>$variable.")
+        args = [parse_value(a, lineno) for a in m["args"].split(",")] if m["args"].strip() else []
+        return Stmt(lineno, "call", {"name": name, "args": args, "into": m["into"]})
 
     m = VAR_RE.fullmatch(text)
     if m:
@@ -220,6 +252,29 @@ def parse_func(lineno, m):
                                  "values": parse_two_values(m["args"], lineno, name)})
 
 
+def parse_def(lineno, m):
+    name = decode_binary(m["name"], lineno)
+    if not re.fullmatch(NAME, name):
+        raise Punishment(lineno, f"your binary spells '{name}', which is not a valid function name.")
+    if name in BUILTINS:
+        raise Punishment(lineno, f"'{name}' is a built-in. You can't replace it, however much you hate it.")
+    params = []
+    if m["params"].strip():
+        for i, part in enumerate(m["params"].split(",")):
+            pm = re.fullmatch(r"\s*(\w+)\s*:\s*\$(" + NAME + r")\s*", part)
+            if not pm:
+                raise Punishment(lineno, f"'{part}' is not a parameter. Write them like rdi:$a")
+            if i >= len(PARAM_REGISTERS):
+                raise Punishment(lineno, "more than 6 parameters. Real CPUs ran out of registers, and so did I.")
+            if pm[1] != PARAM_REGISTERS[i]:
+                raise Punishment(lineno, f"parameter {i + 1} must go in {PARAM_REGISTERS[i]}, not {pm[1]}. "
+                                 f"The order is {', '.join(PARAM_REGISTERS)}.")
+            if pm[2] in params:
+                raise Punishment(lineno, f"two parameters called ${pm[2]}. Be more creative.")
+            params.append(pm[2])
+    return Stmt(lineno, "def", {"name": name, "params": params})
+
+
 def parse_print_args(args, lineno):
     parts, pos = [], 0
     while pos < len(args):
@@ -242,7 +297,26 @@ def parse_print_args(args, lineno):
 def link_blocks(program):
     """Match every if/else/endif and loop/endloop."""
     open_blocks = []
+    seen_code = False
     for index, s in enumerate(program):
+        inside_def = any(program[i].kind == "def" for i in open_blocks)
+        if s.kind == "def":
+            if open_blocks:
+                raise Punishment(s.lineno, "you can't define a function inside something else.")
+            if seen_code:
+                raise Punishment(s.lineno, "functions must be defined at the TOP, before any other code.")
+            open_blocks.append(index)
+            continue
+        if s.kind == "enddefine":
+            if not open_blocks or program[open_blocks[-1]].kind != "def":
+                raise Punishment(s.lineno, "this closes a function that was never opened "
+                                 "(or something inside it is still open).")
+            program[open_blocks.pop()].data["end"] = index
+            continue
+        if not inside_def:
+            seen_code = True
+        if s.kind == "return" and not inside_def:
+            raise Punishment(s.lineno, "return from WHAT? You're not in a function.")
         if s.kind in ("if", "loop"):
             s.data["else"] = None
             open_blocks.append(index)
@@ -268,6 +342,25 @@ def link_blocks(program):
         raise Punishment(s.lineno, f"this {s.kind} is never closed.")
 
 
+def link_calls(program):
+    functions = {}
+    for index, s in enumerate(program):
+        if s.kind == "def":
+            if s.data["name"] in functions:
+                raise Punishment(s.lineno, f"{s.data['name']} is already defined. Once was enough.")
+            functions[s.data["name"]] = index
+    for s in program:
+        if s.kind == "call":
+            if s.data["name"] not in functions:
+                raise Punishment(s.lineno, f"there's no function called {s.data['name']}.")
+            target = functions[s.data["name"]]
+            wanted = len(program[target].data["params"])
+            if len(s.data["args"]) != wanted:
+                raise Punishment(s.lineno, f"{s.data['name']} takes {wanted} argument(s), "
+                                 f"you gave {len(s.data['args'])}.")
+            s.data["target"] = target
+
+
 # ---------------------------------------------------------------- machine
 
 class Machine:
@@ -279,6 +372,7 @@ class Machine:
         self.vars = {}        # name -> [value, type, step last touched]
         self.forgotten = set()
         self.step = 0
+        self.frames = []      # saved callers while a function runs
 
     def touch(self, name, lineno):
         if name not in self.vars:
@@ -354,7 +448,50 @@ class Machine:
             elif s.kind == "endloop":
                 pc = d["start"]
 
+            elif s.kind == "def":                     # definitions only run when called
+                pc = d["end"] + 1
+
+            elif s.kind == "call":
+                pc = self.call(s, pc)
+
+            elif s.kind == "return":
+                pc = self.ret(s)
+
+            elif s.kind == "enddefine":
+                raise Punishment(s.lineno, f"{program[self.frames[-1]['def']].data['name']} "
+                                 "ended without returning anything.")
+
             # endif: nothing to do
+
+    def call(self, s, pc):
+        d = s.data
+        if len(self.frames) >= MAX_DEPTH:
+            raise Punishment(s.lineno, f"stack overflow: more than {MAX_DEPTH} calls deep. "
+                             "You recursed into the abyss.")
+        args = [self.value(v, s.lineno) for v in d["args"]]
+        self.touch(d["into"], s.lineno)             # the result must have somewhere to go
+        func = self.program[d["target"]]
+        new_vars = {}
+        for name, value in zip(func.data["params"], args):
+            self.check_range(value, "int64", s.lineno)
+            new_vars[name] = [value, "int64", self.step]
+        self.frames.append({"return_to": pc, "vars": self.vars, "forgotten": self.forgotten,
+                            "into": d["into"], "step": self.step, "lineno": s.lineno,
+                            "def": d["target"]})
+        self.vars, self.forgotten = new_vars, set()
+        return d["target"] + 1
+
+    def ret(self, s):
+        value = self.value(s.data["value"], s.lineno)
+        frame = self.frames.pop()
+        elapsed = self.step - frame["step"]
+        self.vars, self.forgotten = frame["vars"], frame["forgotten"]
+        for entry in self.vars.values():            # the caller's variables were frozen
+            entry[2] += elapsed
+        entry = self.touch(frame["into"], frame["lineno"])
+        self.check_range(value, entry[1], frame["lineno"])
+        entry[0] = value
+        return frame["return_to"]
 
     def math(self, op, a, b, lineno):
         if op == "add":

@@ -99,3 +99,28 @@ Loop jumps must target `end`.
 
 Because print's `LENGTH` must be exact, printing a number the user typed means checking its
 size with if-statements first. See `examples/double.pmeh`.
+
+## 8. Functions
+### Defining
+```
+<<definefunc<USER>>mco:{NAME IN BINARY}params:{rdi:$a,rsi:$b}>>
+    ...body...
+    <<return<<asm:{ret}>>$result>>/>>
+<<enddefine>>/>>
+```
+- All definitions must be at the **top** of the program, before any other code.
+  They are skipped until called. No functions inside functions.
+- Parameters use the real Linux x86-64 registers, **in order**: `rdi`, `rsi`, `rdx`, `rcx`, `r8`, `r9`
+  (6 at most). `params:{}` means no parameters. Parameters are always `int64`.
+- A function must `return` a value. Reaching `<<enddefine>>/>>` is a punishment.
+- No global variables. A function only sees its parameters and its own variables.
+- A function can't use a built-in's name.
+
+### Calling
+```
+<<startfunc<FROMUSER><<asm:{call NAME}>>mco:{NAME IN BINARY}<<>>$x,1<<into>>$y>>/>>
+```
+- The name in `call NAME` must match the binary name.
+- The number of arguments must match the parameters. The result must go `<<into>>` a variable.
+- While a function runs, the caller's variables are **frozen**: they don't age.
+- Recursion is allowed, up to 50 calls deep. After that: stack overflow.

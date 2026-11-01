@@ -1,0 +1,8 @@
+<<definefunc<USER>>mco:{01110011 01110001 01110101 01100001 01110010 01100101}params:{rdi:$a}>>
+    <<startfunc<FROMBUILTIN><<asm:{imul rax, rbx}>>mco:{01101101 01110101 01101100}<<>>$a,$a<<into>>$a>>/>>
+    <<return<<asm:{ret}>>$a>>/>>
+<<enddefine>>/>>
+<<startvar<STACK>>type:{int64}name:{x}<<>>5>>/>>
+<<startfunc<FROMUSER><<asm:{call square}>>mco:{01110011 01110001 01110101 01100001 01110010 01100101}<<>>$x<<into>>$x>>/>>
+<<startfunc<FROMBUILTIN><<asm:{mov rax, 1; mov rdi, 1; lea rsi, [msg]; mov rdx, 1; syscall}>>mco:{01110000 01110010 01101001 01101110 01110100}<<>>$x>>/>>
+<EXCPROGRAM>VALIDATE:COMMNT"I'd rather die than code in this programming language"[NOMERCYGRANTED]

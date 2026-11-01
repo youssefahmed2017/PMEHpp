@@ -14,6 +14,8 @@ Examples:
 - `examples/three.pmeh`: makes the forbidden number 3
 - `examples/big_or_small.pmeh`: if / else
 - `examples/double.pmeh`: asks for a number and doubles it
+- `examples/square.pmeh`: a function
+- `examples/factorial.pmeh`: a function that calls itself (recursion)
 
 ## Beg for mercy
 

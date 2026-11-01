@@ -1,0 +1,14 @@
+<<definefunc<USER>>mco:{01100110 01100001 01100011 01110100}params:{rdi:$n}>>
+    <<startif<<asm:{cmp rax, rbx; jg skip}>>$n,1>>
+        <<return<<asm:{ret}>>1>>/>>
+    <<endif>>/>>
+    <<startvar<STACK>>type:{int64}name:{m}<<>>$n>>/>>
+    <<startfunc<FROMBUILTIN><<asm:{sub rax, rbx}>>mco:{01110011 01110101 01100010}<<>>$m,1<<into>>$m>>/>>
+    <<startfunc<FROMUSER><<asm:{call fact}>>mco:{01100110 01100001 01100011 01110100}<<>>$m<<into>>$m>>/>>
+    <<startfunc<FROMBUILTIN><<asm:{imul rax, rbx}>>mco:{01101101 01110101 01101100}<<>>$n,$m<<into>>$n>>/>>
+    <<return<<asm:{ret}>>$n>>/>>
+<<enddefine>>/>>
+<<startvar<STACK>>type:{int64}name:{x}<<>>2>>/>>
+<<startfunc<FROMUSER><<asm:{call fact}>>mco:{01100110 01100001 01100011 01110100}<<>>$x<<into>>$x>>/>>
+<<startfunc<FROMBUILTIN><<asm:{mov rax, 1; mov rdi, 1; lea rsi, [msg]; mov rdx, 6; syscall}>>mco:{01110000 01110010 01101001 01101110 01110100}<<>>"5!="$x>>/>>
+<EXCPROGRAM>VALIDATE:COMMNT"I'd rather die than code in this programming language"[NOMERCYGRANTED]
