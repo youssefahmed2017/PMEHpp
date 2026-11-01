@@ -13,6 +13,7 @@ Examples:
 - `examples/countdown.pmeh`: counts down from 5
 - `examples/three.pmeh`: makes the forbidden number 3
 - `examples/big_or_small.pmeh`: if / else
+- `examples/double.pmeh`: asks for a number and doubles it
 
 ## Beg for mercy
 

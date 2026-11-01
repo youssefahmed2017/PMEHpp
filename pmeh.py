@@ -25,13 +25,14 @@ BANNED_DIGITS = "347"
 TYPES = {"int8": 8, "int16": 16, "int32": 32, "int64": 64}
 
 PRINT_ASM = re.compile(r"mov rax, 1; mov rdi, 1; lea rsi, \[msg\]; mov rdx, (\d+); syscall")
+READ_ASM = re.compile(r"mov rax, 0; mov rdi, 0; lea rsi, \[buf\]; mov rdx, (\d+); syscall")
 MATH_ASM = {
     "add": "add rax, rbx",
     "sub": "sub rax, rbx",
     "mul": "imul rax, rbx",
     "div": "cqo; idiv rbx",
 }
-BUILTINS = {"print", *MATH_ASM}
+BUILTINS = {"print", "read", *MATH_ASM}
 CMP_ASM = re.compile(r"cmp rax, rbx; (j[a-z]+) (\w+)")
 JUMPS = {  # jump is TAKEN when this is true
     "jg": lambda a, b: a > b,
@@ -200,6 +201,17 @@ def parse_func(lineno, m):
         return Stmt(lineno, "print", {"length": int(asm_match[1]),
                                       "parts": parse_print_args(m["args"], lineno)})
 
+    if name == "read":
+        asm_match = READ_ASM.fullmatch(asm)
+        if not asm_match:
+            raise Punishment(lineno, "that is not the Linux x86-64 asm for reading. It must be:\n  "
+                             "mov rax, 0; mov rdi, 0; lea rsi, [buf]; mov rdx, MAXLEN; syscall")
+        if m["args"].strip():
+            raise Punishment(lineno, "read takes no arguments. Leave the space after <<>> empty.")
+        if not m["into"]:
+            raise Punishment(lineno, "you read input and threw it away. Add <<into>>$variable.")
+        return Stmt(lineno, "read", {"maxlen": int(asm_match[1]), "into": m["into"]})
+
     if asm != MATH_ASM[name]:
         raise Punishment(lineno, f"wrong asm for {name}. It must be: {MATH_ASM[name]}")
     if not m["into"]:
@@ -259,9 +271,11 @@ def link_blocks(program):
 # ---------------------------------------------------------------- machine
 
 class Machine:
-    def __init__(self, program, out):
+    def __init__(self, program, out, inp=None):
         self.program = program
         self.out = out
+        self.inp = inp if inp is not None else sys.stdin
+        self.pending = ""     # typed characters that no read has taken yet
         self.vars = {}        # name -> [value, type, step last touched]
         self.forgotten = set()
         self.step = 0
@@ -311,6 +325,12 @@ class Machine:
             elif s.kind == "print":
                 self.print(s)
 
+            elif s.kind == "read":
+                value = self.read(s)
+                entry = self.touch(s.data["into"], s.lineno)
+                self.check_range(value, entry[1], s.lineno)
+                entry[0] = value
+
             elif s.kind == "math":
                 a, b = (self.value(v, s.lineno) for v in d["values"])
                 result = self.math(d["op"], a, b, s.lineno)
@@ -348,6 +368,24 @@ class Machine:
         q = abs(a) // abs(b)                          # idiv rounds toward zero
         return q if (a < 0) == (b < 0) else -q
 
+    def read(self, s):
+        """Like the real read syscall: take at most MAXLEN characters, leave the rest waiting."""
+        if not self.pending:
+            self.out.flush()
+            self.pending = self.inp.readline()
+            if not self.pending:
+                raise Punishment(s.lineno, "there is no input left to read. The user gave up.")
+        chunk = self.pending[:s.data["maxlen"]]
+        self.pending = self.pending[s.data["maxlen"]:]
+        typed = chunk.rstrip("\n")
+        if not typed:
+            raise Punishment(s.lineno, f"read got {chunk!r}, which is not a number. "
+                             "(Leftover characters from an earlier read count too.)")
+        if not re.fullmatch(r"-?\d+", typed):
+            raise Punishment(s.lineno, f"the user typed {typed!r}. That's not a number. "
+                             "Even the user is bad at this.")
+        return int(typed)
+
     def print(self, s):
         text = ""
         for kind, x in s.data["parts"]:
@@ -363,7 +401,7 @@ class Machine:
         if s.data["length"] != len(text):
             raise Punishment(s.lineno, f"mov rdx, {s.data['length']} but the text {text!r} "
                              f"is {len(text)} characters long.")
-        print(text, file=self.out)
+        print(text, file=self.out, flush=True)
 
 
 # ---------------------------------------------------------------- command line

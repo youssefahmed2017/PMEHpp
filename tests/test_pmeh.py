@@ -13,14 +13,18 @@ PRINT = ("<<startfunc<FROMBUILTIN><<asm:{mov rax, 1; mov rdi, 1; lea rsi, [msg];
          "mco:{01110000 01110010 01101001 01101110 01110100}<<>>%s>>/>>")
 
 
-def run(source):
+READ = ("<<startfunc<FROMBUILTIN><<asm:{mov rax, 0; mov rdi, 0; lea rsi, [buf]; mov rdx, %d; syscall}>>"
+        "mco:{01110010 01100101 01100001 01100100}<<>><<into>>$%s>>/>>")
+
+
+def run(source, typed=""):
     out = io.StringIO()
-    pmeh.Machine(pmeh.parse(source), out).run()
+    pmeh.Machine(pmeh.parse(source), out, io.StringIO(typed)).run()
     return out.getvalue()
 
 
-def run_file(name):
-    return run((ROOT / "examples" / name).read_text())
+def run_file(name, typed=""):
+    return run((ROOT / "examples" / name).read_text(), typed)
 
 
 class Examples(unittest.TestCase):
@@ -35,6 +39,47 @@ class Examples(unittest.TestCase):
 
     def test_big_or_small(self):
         self.assertEqual(run_file("big_or_small.pmeh"), "BIG\n")
+
+    def test_double(self):
+        for typed, answer in [("4\n", "8"), ("15\n", "30"), ("99\n", "198")]:
+            self.assertEqual(run_file("double.pmeh", typed), "NUMBER?\n" + answer + "\n")
+
+
+class Input(unittest.TestCase):
+    VAR = "<<startvar<STACK>>type:{%s}name:{n}<<>>0>>/>>"
+
+    def program(self, *lines, type_="int64"):
+        return "\n".join([self.VAR % type_, *lines, pmeh.VALIDATION_LINE])
+
+    def test_read_and_print(self):
+        self.assertEqual(run(self.program(READ % (3, "n"), PRINT % (2, "$n")), "42\n"), "42\n")
+
+    def test_typed_numbers_are_not_flipped(self):
+        self.assertEqual(run(self.program(READ % (3, "n"), PRINT % (2, "$n")), "21\n"), "21\n")
+
+    def test_leftover_goes_to_next_read(self):
+        src = self.program(READ % (2, "n"), PRINT % (2, "$n"), READ % (2, "n"), PRINT % (1, "$n"))
+        self.assertEqual(run(src, "123\n"), "12\n3\n")
+
+    def test_leftover_enter_is_not_a_number(self):
+        src = self.program(READ % (2, "n"), READ % (3, "n"))
+        with self.assertRaises(pmeh.Punishment) as ctx:
+            run(src, "12\n34\n")
+        self.assertIn("not a number", ctx.exception.message)
+
+    def test_not_a_number(self):
+        with self.assertRaises(pmeh.Punishment):
+            run(self.program(READ % (5, "n")), "abc\n")
+
+    def test_no_input(self):
+        with self.assertRaises(pmeh.Punishment) as ctx:
+            run(self.program(READ % (3, "n")), "")
+        self.assertIn("no input left", ctx.exception.message)
+
+    def test_overflow(self):
+        with self.assertRaises(pmeh.Punishment) as ctx:
+            run(self.program(READ % (4, "n"), type_="int8"), "300\n")
+        self.assertIn("Overflow", ctx.exception.message)
 
 
 class Numbers(unittest.TestCase):

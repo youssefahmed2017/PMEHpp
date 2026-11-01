@@ -31,6 +31,7 @@ Every number is turned upside down: read the digits right to left, then flip eac
 | print | `mov rax, 1; mov rdi, 1; lea rsi, [msg]; mov rdx, LENGTH; syscall` | `01110000 01110010 01101001 01101110 01110100` |
 | add | `add rax, rbx` | `01100001 01100100 01100100` |
 | sub | `sub rax, rbx` | `01110011 01110101 01100010` |
+| read | `mov rax, 0; mov rdi, 0; lea rsi, [buf]; mov rdx, MAXLEN; syscall` | `01110010 01100101 01100001 01100100` |
 | mul | `imul rax, rbx` | `01101101 01110101 01101100` |
 | div | `cqo; idiv rbx` (rounds toward zero) | `01100100 01101001 01110110` |
 
@@ -82,3 +83,19 @@ If jumps must target `skip`.
 ```
 The condition is checked each time round. The loop stops when the jump condition is true.
 Loop jumps must target `end`.
+
+## 7. User input
+```
+<<startfunc<FROMBUILTIN><<asm:{mov rax, 0; mov rdi, 0; lea rsi, [buf]; mov rdx, MAXLEN; syscall}>>mco:{01110010 01100101 01100001 01100100}<<>><<into>>$x>>/>>
+```
+- Read takes no arguments, and the result must go `<<into>>` an existing variable.
+- Only whole numbers can be typed. The user types them **normally** (not upside down).
+- There is no built-in question. Print one first.
+- Like the real `read` syscall, it takes at most `MAXLEN` characters, **including the Enter key**.
+  Anything extra stays waiting and is taken by the **next** read. Typing `123` with `MAXLEN` 2
+  gives 12, and the next read gets `3`.
+- A leftover Enter on its own is not a number, so it's an error.
+- The value must fit the variable's type.
+
+Because print's `LENGTH` must be exact, printing a number the user typed means checking its
+size with if-statements first. See `examples/double.pmeh`.

@@ -1,0 +1,14 @@
+<<startvar<STACK>>type:{int64}name:{n}<<>>0>>/>>
+<<startfunc<FROMBUILTIN><<asm:{mov rax, 1; mov rdi, 1; lea rsi, [msg]; mov rdx, 7; syscall}>>mco:{01110000 01110010 01101001 01101110 01110100}<<>>"NUMBER?">>/>>
+<<startfunc<FROMBUILTIN><<asm:{mov rax, 0; mov rdi, 0; lea rsi, [buf]; mov rdx, 3; syscall}>>mco:{01110010 01100101 01100001 01100100}<<>><<into>>$n>>/>>
+<<startfunc<FROMBUILTIN><<asm:{imul rax, rbx}>>mco:{01101101 01110101 01101100}<<>>$n,5<<into>>$n>>/>>
+<<startif<<asm:{cmp rax, rbx; jge skip}>>$n,01>>
+    <<startfunc<FROMBUILTIN><<asm:{mov rax, 1; mov rdi, 1; lea rsi, [msg]; mov rdx, 1; syscall}>>mco:{01110000 01110010 01101001 01101110 01110100}<<>>$n>>/>>
+<<else>>
+    <<startif<<asm:{cmp rax, rbx; jge skip}>>$n,001>>
+        <<startfunc<FROMBUILTIN><<asm:{mov rax, 1; mov rdi, 1; lea rsi, [msg]; mov rdx, 2; syscall}>>mco:{01110000 01110010 01101001 01101110 01110100}<<>>$n>>/>>
+    <<else>>
+        <<startfunc<FROMBUILTIN><<asm:{mov rax, 1; mov rdi, 1; lea rsi, [msg]; mov rdx, 3; syscall}>>mco:{01110000 01110010 01101001 01101110 01110100}<<>>$n>>/>>
+    <<endif>>/>>
+<<endif>>/>>
+<EXCPROGRAM>VALIDATE:COMMNT"I'd rather die than code in this programming language"[NOMERCYGRANTED]
