@@ -18,16 +18,19 @@ Examples:
 - `examples/factorial.pmeh`: a function that calls itself (recursion)
 - `examples/sum_list.pmeh`: a list
 
-## Beg for mercy
+## Command line options
 
-    python pmeh.py --mercy 15      # how do I write 15?  -> 21
-    python pmeh.py --mercy print   # 'print' in binary
+| Option | What it does |
+|---|---|
+| `-h`, `--help` | show all options |
+| `-c LINE`, `--command LINE` | run program lines from the command instead of a file (one `-c` per line) |
+| `-k`, `--check` | check a program without running it (mistakes that only happen while running aren't found) |
+| `-m VALUE...`, `--mercy VALUE...` | how to write a number (`-m 15` gives `21`), or a word in binary (`-m print`) |
+| `-g`, `--i-give-up` | plain, readable error messages, for cowards |
+| `-s N`, `--seed N` | make list garbage the same on every run |
+| `-V`, `--version` | show the version |
 
-## Errors
-
-Error reports are scrambled on purpose (see SYNTAX.md section 10). For a plain one:
-
-    python pmeh.py --i-give-up program.pmeh
+Error reports are scrambled on purpose (see SYNTAX.md section 10). Use `-g` for a plain one.
 
 ## Tests
 

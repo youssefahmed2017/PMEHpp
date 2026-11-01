@@ -1,14 +1,9 @@
 #!/usr/bin/env python3
 """PunishMeEvenHarder++ interpreter (first draft).
 
-Usage:
-    python pmeh.py program.pmeh
-    python pmeh.py --mercy 15       # how do I write the number 15?
-    python pmeh.py --mercy print    # what is 'print' in binary?
-    python pmeh.py --i-give-up program.pmeh   # readable errors, for cowards
-
-The full rules are in SYNTAX.md.
+Run `python pmeh.py -h` for the command line options. The full rules are in SYNTAX.md.
 """
+import argparse
 import codecs
 import random
 import re
@@ -16,6 +11,8 @@ import sys
 from dataclasses import dataclass, field
 
 # ---------------------------------------------------------------- constants
+
+__version__ = "0.1.0"
 
 VALIDATION_LINE = ('<EXCPROGRAM>VALIDATE:COMMNT"I\'d rather die than code in '
                    'this programming language"[NOMERCYGRANTED]')
@@ -725,35 +722,82 @@ def mercy(arg):
     return f"'{arg}' in binary: " + " ".join(f"{ord(c):08b}" for c in arg)
 
 
-def main(argv):
-    if len(argv) == 3 and argv[1] == "--mercy":
-        print(mercy(argv[2]))
-        return 0
-    coward = len(argv) == 3 and argv[1] == "--i-give-up"
+def build_parser():
+    parser = argparse.ArgumentParser(
+        prog="pmeh",
+        description="PunishMeEvenHarder++: the language that is harder than assembly, "
+                    "because you have to write the assembly too. The rules are in SYNTAX.md.",
+        epilog="examples:\n"
+               "  pmeh examples/hello.pmeh          run a program\n"
+               "  pmeh -k examples/hello.pmeh       only check it, don't run it\n"
+               "  pmeh -c LINE -c LINE              run lines typed in the command\n"
+               "  pmeh -m 15 print                  how do I write 15? what is 'print' in binary?\n"
+               "  pmeh -g examples/hello.pmeh       readable errors, for cowards",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    source = parser.add_mutually_exclusive_group()
+    source.add_argument("file", nargs="?", help="the .pmeh program to suffer through")
+    source.add_argument("-c", "--command", action="append", metavar="LINE",
+                        help="run program lines given here instead of a file "
+                             "(repeat -c once per line)")
+    source.add_argument("-m", "--mercy", nargs="+", metavar="VALUE",
+                        help="beg for help: how to write a number, or a word in binary")
+    parser.add_argument("-k", "--check", action="store_true",
+                        help="check the program without running it (mistakes that only "
+                             "happen while running, like a wrong print length, aren't found)")
+    parser.add_argument("-g", "--i-give-up", action="store_true", dest="coward",
+                        help="show plain, readable error messages")
+    parser.add_argument("-s", "--seed", type=int, metavar="N",
+                        help="make list garbage the same every run")
+    parser.add_argument("-V", "--version", action="version",
+                        version=f"PunishMeEvenHarder++ {__version__} (no mercy granted)")
+    return parser
+
+
+def report(p, source, coward):
     if coward:
-        argv = [argv[0], argv[2]]
-    if len(argv) != 2:
-        print(__doc__, file=sys.stderr)
-        return 2
+        print(f"\nPUNISHMENT on line {p.lineno}: {p.message}", file=sys.stderr)
+        print("Coward.", file=sys.stderr)
+    else:
+        print(punishment_report(p, source), file=sys.stderr)
+
+
+def main(argv=None):
+    parser = build_parser()
+    args = parser.parse_args(argv)
+
+    if args.mercy:
+        for value in args.mercy:
+            print(mercy(value))
+        return 0
+
+    if args.command:
+        source, name = "\n".join(args.command) + "\n", "-c"
+    elif args.file:
+        name = args.file
+        try:
+            with open(args.file, encoding="utf-8") as f:
+                source = f.read()
+        except OSError as e:
+            print(f"Can't even open the file ({e}). Great start.", file=sys.stderr)
+            return 1
+    else:
+        parser.error("give me a program file, -c LINE or -m VALUE. I'm not a mind reader.")
+
     try:
-        with open(argv[1], encoding="utf-8") as f:
-            source = f.read()
-    except OSError as e:
-        print(f"Can't even open the file ({e}). Great start.", file=sys.stderr)
-        return 1
-    try:
-        Machine(parse(source), sys.stdout).run()
+        program = parse(source)
+        if args.check:
+            print(f"{name}: no punishments found. Yet.")
+            return 0
+        rng = random.Random(args.seed) if args.seed is not None else None
+        Machine(program, sys.stdout, rng=rng).run()
     except Punishment as p:
         sys.stdout.flush()
-        if coward:
-            print(f"\nPUNISHMENT on line {p.lineno}: {p.message}", file=sys.stderr)
-            print("Coward.", file=sys.stderr)
-        else:
-            print(punishment_report(p, source), file=sys.stderr)
+        report(p, source, args.coward)
         return 1
     sys.stdout.flush()
     return 0
 
 
 if __name__ == "__main__":
-    sys.exit(main(sys.argv))
+    sys.exit(main())

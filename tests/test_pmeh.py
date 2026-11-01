@@ -246,6 +246,61 @@ class Lists(unittest.TestCase):
         self.assertEqual(run(src), "9\n")
 
 
+class CommandLine(unittest.TestCase):
+    def cli(self, *argv):
+        import contextlib
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            try:
+                code = pmeh.main(list(argv))
+            except SystemExit as e:
+                code = e.code
+        return code, out.getvalue(), err.getvalue()
+
+    def test_run_file(self):
+        self.assertEqual(self.cli(str(ROOT / "examples" / "hello.pmeh"))[:2], (0, "HELLO WORLD\n"))
+
+    def test_command_lines(self):
+        code, out, _ = self.cli("-c", PRINT % (2, '"HI"'), "-c", V)
+        self.assertEqual((code, out), (0, "HI\n"))
+
+    def test_check_does_not_run(self):
+        code, out, _ = self.cli("-k", str(ROOT / "examples" / "hello.pmeh"))
+        self.assertEqual(code, 0)
+        self.assertNotIn("HELLO", out)
+
+    def test_check_finds_punishment(self):
+        self.assertEqual(self.cli("-k", "-c", "nonsense", "-c", V)[0], 1)
+
+    def test_coward_errors_are_plain(self):
+        code, _, err = self.cli("-g", "-c", "nonsense", "-c", V)
+        self.assertEqual(code, 1)
+        self.assertIn("PUNISHMENT on line 1", err)
+
+    def test_mercy(self):
+        code, out, _ = self.cli("-m", "15", "add")
+        self.assertEqual(code, 0)
+        self.assertIn("write 21", out)
+        self.assertIn("01100001 01100100 01100100", out)
+
+    def test_seed_makes_garbage_repeat(self):
+        lines = [LIST % ("int64", "8"), VAR % ("a", "0"), LOAD % ("$xs,0", "a"),
+                 PRINT % (1, "$a"), V]
+        args = ["-g", "-s", "7"] + [x for line in lines for x in ("-c", line)]
+        self.assertEqual(self.cli(*args), self.cli(*args))
+
+    def test_version(self):
+        code, out, _ = self.cli("-V")
+        self.assertEqual(code, 0)
+        self.assertIn(pmeh.__version__, out)
+
+    def test_nothing_given(self):
+        self.assertEqual(self.cli()[0], 2)
+
+    def test_file_and_command_together(self):
+        self.assertEqual(self.cli("x.pmeh", "-c", "x")[0], 2)
+
+
 class ErrorReports(unittest.TestCase):
     def test_upside_down_line_numbers(self):
         self.assertEqual(pmeh.upside_down(15), "21")
