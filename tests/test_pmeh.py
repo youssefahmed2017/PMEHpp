@@ -159,6 +159,28 @@ class Functions(unittest.TestCase):
         self.assertPunished(prog(RET % "1"), "not in a function")
 
 
+class ErrorReports(unittest.TestCase):
+    def test_upside_down_line_numbers(self):
+        self.assertEqual(pmeh.upside_down(15), "21")
+        self.assertEqual(pmeh.upside_down(3), "5 <3 1")       # 2 + 1, and 2 is written 5
+        for n in range(1, 500):
+            parts = pmeh.upside_down(n).split(" <3 ")
+            self.assertEqual(sum(pmeh.flip_number(x) for x in parts), n)
+
+    def test_scramble_round_trip(self):
+        msg = "mov rdx, 3 but the text 'HI' is 2 characters long."
+        self.assertNotEqual(pmeh.scramble(msg), msg)
+        self.assertEqual(pmeh.unscramble(pmeh.scramble(msg)), msg)
+
+    def test_report_contents(self):
+        import random
+        source = "first\nsecond\nthird\n"
+        report = pmeh.punishment_report(pmeh.Punishment(1, "Oops"), source, random.Random(1))
+        self.assertIn("line 5 <3 1,", report)                 # line 1 is 3rd from the bottom
+        self.assertIn("NOT the problem: ", report)
+        self.assertNotIn("NOT the problem: first", report)
+
+
 class Numbers(unittest.TestCase):
     def test_flips(self):
         cases = {"21": 15, "01": 10, "5": 2, "6": 9, "56": 92, "-21": -15, "0": 0}

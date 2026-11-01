@@ -22,6 +22,12 @@ Examples:
     python pmeh.py --mercy 15      # how do I write 15?  -> 21
     python pmeh.py --mercy print   # 'print' in binary
 
+## Errors
+
+Error reports are scrambled on purpose (see SYNTAX.md section 9). For a plain one:
+
+    python pmeh.py --i-give-up program.pmeh
+
 ## Tests
 
     python -m unittest discover tests

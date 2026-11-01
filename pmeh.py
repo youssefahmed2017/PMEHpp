@@ -5,9 +5,11 @@ Usage:
     python pmeh.py program.pmeh
     python pmeh.py --mercy 15       # how do I write the number 15?
     python pmeh.py --mercy print    # what is 'print' in binary?
+    python pmeh.py --i-give-up program.pmeh   # readable errors, for cowards
 
 The full rules are in SYNTAX.md.
 """
+import codecs
 import random
 import re
 import sys
@@ -541,6 +543,62 @@ class Machine:
         print(text, file=self.out, flush=True)
 
 
+# ---------------------------------------------------------------- error reports
+# Every error report contains everything you need. None of it is easy to read.
+
+RED = "\x1b[1;31m"
+RESET = "\x1b[0m"
+
+
+def writable(n):
+    return all(d in FLIP for d in str(n))
+
+
+def upside_down(n):
+    """Write a number the PMEH way. If it can't be written, split it into a sum."""
+    if writable(n):
+        return "".join(FLIP[d] for d in reversed(str(n)))
+    for a in range(n - 1, 0, -1):
+        if writable(a) and writable(n - a):
+            return f"{upside_down(a)} <3 {upside_down(n - a)}"
+    return "?"
+
+
+def scramble(message):
+    """Backwards, then ROT13."""
+    return codecs.encode(message[::-1], "rot13")
+
+
+def unscramble(text):
+    return codecs.encode(text, "rot13")[::-1]
+
+
+def paint(text, rng):
+    """Every character in a random dim colour on black. Some are black on black."""
+    out = []
+    for ch in text:
+        if ch == "\n":
+            out.append(RESET + ch)
+        else:
+            out.append(f"\x1b[2;3{rng.randrange(8)};40m{ch}")
+    return "".join(out) + RESET
+
+
+def punishment_report(p, source, rng=random):
+    lines = source.splitlines()
+    from_bottom = len(lines) - p.lineno + 1
+    others = [l.strip() for n, l in enumerate(lines, 1) if l.strip() and n != p.lineno]
+    report = [
+        f"\n{RED}PUNISHMENT.{RESET}",
+        f"Location: line {upside_down(max(from_bottom, 1))}, counted from the bottom.",
+        f"Reason: {paint(scramble(p.message), rng)}",
+    ]
+    if others:
+        report.append(f"This line is definitely NOT the problem: {rng.choice(others)}")
+    report.append(f"{RED}{rng.choice(INSULTS)}{RESET}")
+    return "\n".join(report)
+
+
 # ---------------------------------------------------------------- command line
 
 def mercy(arg):
@@ -556,6 +614,9 @@ def main(argv):
     if len(argv) == 3 and argv[1] == "--mercy":
         print(mercy(argv[2]))
         return 0
+    coward = len(argv) == 3 and argv[1] == "--i-give-up"
+    if coward:
+        argv = [argv[0], argv[2]]
     if len(argv) != 2:
         print(__doc__, file=sys.stderr)
         return 2
@@ -569,8 +630,11 @@ def main(argv):
         Machine(parse(source), sys.stdout).run()
     except Punishment as p:
         sys.stdout.flush()
-        print(f"\nPUNISHMENT on line {p.lineno}: {p.message}", file=sys.stderr)
-        print(random.choice(INSULTS), file=sys.stderr)
+        if coward:
+            print(f"\nPUNISHMENT on line {p.lineno}: {p.message}", file=sys.stderr)
+            print("Coward.", file=sys.stderr)
+        else:
+            print(punishment_report(p, source), file=sys.stderr)
         return 1
     sys.stdout.flush()
     print(f"\n{random.choice(COMPLIMENTS)}", file=sys.stderr)

@@ -124,3 +124,17 @@ size with if-statements first. See `examples/double.pmeh`.
 - The number of arguments must match the parameters. The result must go `<<into>>` a variable.
 - While a function runs, the caller's variables are **frozen**: they don't age.
 - Recursion is allowed, up to 50 calls deep. After that: stack overflow.
+
+## 9. Error reports
+Every error report contains everything you need. None of it is easy to read.
+
+- **Location:** the line number is counted **from the bottom** of the file (blank lines count),
+  and written **upside down**. If it can't be written (3, 4, 7), it's shown as a sum:
+  `5 <3 1` means 2 + 1 = line 3 from the bottom.
+- **Reason:** the message is written **backwards** and then **ROT13**-encoded, and every letter
+  has a random dim colour. Some letters are black on black (copy and paste them to see them).
+- **"This line is definitely NOT the problem":** a random line from your program that is
+  not the problem. It's there to waste your time.
+- The insult is the only part in bright, readable red.
+
+Cowards can run `python pmeh.py --i-give-up program.pmeh` for a plain error message.
