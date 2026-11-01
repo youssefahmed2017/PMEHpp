@@ -1,0 +1,6 @@
+<<startvar<STACK>>type:{int64}name:{x}<<>>2>>/>>
+<<startloop<<asm:{cmp rax, rbx; jle end}>>$x,0>>
+<<startfunc<FROMBUILTIN><<asm:{mov rax, 1; mov rdi, 1; lea rsi, [msg]; mov rdx, 1; syscall}>>mco:{01110000 01110010 01101001 01101110 01110100}<<>>$x>>/>>
+<<startfunc<FROMBUILTIN><<asm:{sub rax, rbx}>>mco:{01110011 01110101 01100010}<<>>$x,1<<into>>$x>>/>>
+<<endloop>>/>>
+<EXCPROGRAM>VALIDATE:COMMNT"I'd rather die than code in this programming language"[NOMERCYGRANTED]

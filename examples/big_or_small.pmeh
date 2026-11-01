@@ -1,0 +1,7 @@
+<<startvar<STACK>>type:{int64}name:{x}<<>>21>>/>>
+<<startif<<asm:{cmp rax, rbx; jle skip}>>$x,01>>
+<<startfunc<FROMBUILTIN><<asm:{mov rax, 1; mov rdi, 1; lea rsi, [msg]; mov rdx, 3; syscall}>>mco:{01110000 01110010 01101001 01101110 01110100}<<>>"BIG">>/>>
+<<else>>
+<<startfunc<FROMBUILTIN><<asm:{mov rax, 1; mov rdi, 1; lea rsi, [msg]; mov rdx, 5; syscall}>>mco:{01110000 01110010 01101001 01101110 01110100}<<>>"SMALL">>/>>
+<<endif>>/>>
+<EXCPROGRAM>VALIDATE:COMMNT"I'd rather die than code in this programming language"[NOMERCYGRANTED]

@@ -1,0 +1,2 @@
+<<startfunc<FROMBUILTIN><<asm:{mov rax, 1; mov rdi, 1; lea rsi, [msg]; mov rdx, 11; syscall}>>mco:{01110000 01110010 01101001 01101110 01110100}<<>>"HELLO"[5word]"WORLD">>/>>
+<EXCPROGRAM>VALIDATE:COMMNT"I'd rather die than code in this programming language"[NOMERCYGRANTED]
