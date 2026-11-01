@@ -78,13 +78,6 @@ INSULTS = [
     "Somewhere, a compiler is crying because of you.",
     "Wow. Just wow.",
 ]
-COMPLIMENTS = [
-    "It worked. I'm as surprised as you are.",
-    "Fine. You win this time.",
-    "Program finished. Don't let it go to your head.",
-    "No errors. Statistically, that was luck.",
-]
-
 
 class Garbage(str):
     """Whatever was lying around in memory. Not a number. Possibly not anything."""
@@ -759,7 +752,6 @@ def main(argv):
             print(punishment_report(p, source), file=sys.stderr)
         return 1
     sys.stdout.flush()
-    print(f"\n{random.choice(COMPLIMENTS)}", file=sys.stderr)
     return 0
 
 
