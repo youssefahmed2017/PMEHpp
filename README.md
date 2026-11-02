@@ -33,6 +33,7 @@ Examples:
 - `examples/text.pmeh`: text, strcat and strlen
 - `examples/overflow.pmeh`: a buffer overflow that corrupts another variable
 - `examples/dice.pmeh`: rolls a die (random numbers, mod, a comment)
+- `examples/diary.pmeh`: writes a file (`diary.txt`) and reads it back
 
 ## Command line options
 
@@ -46,7 +47,7 @@ Examples:
 | `-s N`, `--seed N` | make random numbers and list garbage the same on every run |
 | `-V`, `--version` | show the version |
 
-Error reports are scrambled on purpose (see SYNTAX.md section 13). Use `-g` for a plain one.
+Error reports are scrambled on purpose (see SYNTAX.md section 14). Use `-g` for a plain one.
 
 ## Tests
 

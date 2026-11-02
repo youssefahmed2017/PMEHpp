@@ -36,14 +36,18 @@ Every number is turned upside down: read the digits right to left, then flip eac
 | load | `mov rax, [rbx + rcx]` | `01101100 01101111 01100001 01100100` |
 | mod | `cqo; idiv rbx; mov rax, rdx` (the remainder, with the sign of the first number) | `01101101 01101111 01100100` |
 | rand | `mov rax, 318; lea rdi, [buf]; mov rsi, BYTES; mov rdx, 0; syscall` | `01110010 01100001 01101110 01100100` |
+| write | `mov rax, 1; mov rdi, [fd]; lea rsi, [msg]; mov rdx, LENGTH; syscall` | `01110111 01110010 01101001 01110100 01100101` |
+| open | `mov rax, 2; lea rdi, [path]; mov rsi, FLAGS; mov rdx, MODE; syscall` | `01101111 01110000 01100101 01101110` |
+| close | `mov rax, 3; mov rdi, [fd]; syscall` | `01100011 01101100 01101111 01110011 01100101` |
 | mul | `imul rax, rbx` | `01101101 01110101 01101100` |
 | div | `cqo; idiv rbx` (rounds toward zero) | `01100100 01101001 01110110` |
 
 Math arguments: `$x,1`. The first goes in `rax`, the second in `rbx`.
 
 ### Print
-- Print accepts `"TEXT"`, `[Nword]` and `$variables`, glued together with nothing in between.
+- Print accepts `"TEXT"`, `[Nword]`, `[Nline]` and `$variables`, glued together with nothing in between.
 - Text may not contain real spaces. A space is `[Nword]`, where N is its position in the output, counting from 0.
+- A new line inside the text is `[Nline]`, with N its position, the same way.
 - `LENGTH` must be exactly the number of characters printed. Print adds a newline at the end (not counted).
 
 ```
@@ -219,7 +223,57 @@ The name after `call` must match the binary name (get it with `pmeh -m strlen`).
   To get 1 to 6: `mod` by 6, make it positive, add 1. See `examples/dice.pmeh`.
 - `pmeh -s N` makes the random numbers repeat.
 
-## 13. Error reports
+## 13. Files
+Files use the real Linux system calls. A **file descriptor** is a number that stands for an open
+file: 0 is the keyboard, 1 the screen, 2 the error output, and files you open get 3, 4, 5…
+
+### open
+```
+<<startfunc<FROMBUILTIN><<asm:{mov rax, 2; lea rdi, [path]; mov rsi, 577; mov rdx, 420; syscall}>>mco:{01101111 01110000 01100101 01101110}<<>>$path<<into>>$fd>>/>>
+```
+- The file name is a text variable (`$path`), so it's written backwards: `[0null]"txt.yraid"`.
+- `FLAGS` is the real Linux number, made by adding these together:
+
+  | Number | Meaning |
+  |---|---|
+  | 0 | read only |
+  | 1 | write only |
+  | 2 | read and write |
+  | 64 | create the file if it doesn't exist |
+  | 512 | empty the file first |
+  | 1024 | add to the end of the file |
+
+  So 577 = 1 + 64 + 512 (write, create, empty first) and 1089 = 1 + 64 + 1024 (append).
+- `MODE` is the permissions for a new file, in **decimal**. The usual `0644` (rw-r--r--) is 420.
+- Like the real syscall, open **doesn't punish you when it fails**. It gives a negative error
+  number instead: -2 (no such file), -13 (permission denied), -22 (bad flags)… Check it yourself.
+
+### write
+```
+<<startfunc<FROMBUILTIN><<asm:{mov rax, 1; mov rdi, [fd]; lea rsi, [msg]; mov rdx, 2; syscall}>>mco:{01110111 01110010 01101001 01110100 01100101}<<>>$fd,"HI"<<into>>$n>>/>>
+```
+- The file descriptor comes first, then the text, written like print.
+- Unlike print, write **adds no newline**. Use `[Nline]`.
+- `LENGTH` must be exact. The result is how many bytes were written, or -9 for a bad file descriptor.
+- Writing to file descriptor 1 writes to the screen, without a newline.
+
+### read from a file
+The same `read` as for the keyboard, with `mov rdi, [fd]` and the file descriptor as an argument:
+```
+<<startfunc<FROMBUILTIN><<asm:{mov rax, 0; mov rdi, [fd]; lea rsi, [buf]; mov rdx, 22; syscall}>>mco:{01110010 01100101 01100001 01100100}<<>>$fd<<into>>$page>>/>>
+```
+- It reads up to `MAXLEN` bytes, **newlines included**, and carries on from there next time.
+- At the end of the file it reads nothing: a text variable gets empty text, a number is a punishment.
+- Reading a file descriptor that isn't open is a punishment.
+
+### close
+```
+<<startfunc<FROMBUILTIN><<asm:{mov rax, 3; mov rdi, [fd]; syscall}>>mco:{01100011 01101100 01101111 01110011 01100101}<<>>$fd<<into>>$fd>>/>>
+```
+Gives 0 if it worked, -9 if that file wasn't open. **Ending the program with a file still open is
+a punishment.**
+
+## 14. Error reports
 Every error report contains everything you need. None of it is easy to read.
 
 - **Location:** the line number is counted **from the bottom** of the file (blank lines count),
