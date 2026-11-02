@@ -1,0 +1,10 @@
+<<COMMNT"EID A LLOR">>/>>
+<<startvar<STACK>>type:{int64}name:{x}<<>>0>>/>>
+<<startfunc<FROMBUILTIN><<asm:{mov rax, 318; lea rdi, [buf]; mov rsi, 8; mov rdx, 0; syscall}>>mco:{01110010 01100001 01101110 01100100}<<>><<into>>$x>>/>>
+<<startfunc<FROMBUILTIN><<asm:{cqo; idiv rbx; mov rax, rdx}>>mco:{01101101 01101111 01100100}<<>>$x,9<<into>>$x>>/>>
+<<startif<<asm:{cmp rax, rbx; jge skip}>>$x,0>>
+    <<startfunc<FROMBUILTIN><<asm:{imul rax, rbx}>>mco:{01101101 01110101 01101100}<<>>$x,-1<<into>>$x>>/>>
+<<endif>>/>>
+<<startfunc<FROMBUILTIN><<asm:{add rax, rbx}>>mco:{01100001 01100100 01100100}<<>>$x,1<<into>>$x>>/>>
+<<startfunc<FROMBUILTIN><<asm:{mov rax, 1; mov rdi, 1; lea rsi, [msg]; mov rdx, 9; syscall}>>mco:{01110000 01110010 01101001 01101110 01110100}<<>>"ROLLED:"[7word]$x>>/>>
+<EXCPROGRAM>VALIDATE:COMMNT"I'd rather die than code in this programming language"[NOMERCYGRANTED]

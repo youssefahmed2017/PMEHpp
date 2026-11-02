@@ -30,16 +30,18 @@ BANNED_DIGITS = "347"
 TYPES = {"int8": 8, "int16": 16, "int32": 32, "int64": 64}
 
 PRINT_ASM = re.compile(r"mov rax, 1; mov rdi, 1; lea rsi, \[msg\]; mov rdx, (\d+); syscall")
+RAND_ASM = re.compile(r"mov rax, 318; lea rdi, \[buf\]; mov rsi, (\d+); mov rdx, 0; syscall")
 READ_ASM = re.compile(r"mov rax, 0; mov rdi, 0; lea rsi, \[buf\]; mov rdx, (\d+); syscall")
 MATH_ASM = {
     "add": "add rax, rbx",
     "sub": "sub rax, rbx",
     "mul": "imul rax, rbx",
     "div": "cqo; idiv rbx",
+    "mod": "cqo; idiv rbx; mov rax, rdx",
 }
 STORE_ASM = "mov [rbx + rcx], rax"
 LOAD_ASM = "mov rax, [rbx + rcx]"
-BUILTINS = {"print", "read", "store", "load", *MATH_ASM}
+BUILTINS = {"print", "read", "rand", "store", "load", *MATH_ASM}
 LIBC = {  # name: (number of arguments, gives a result back)
     "strlen": (1, True),
     "strcat": (2, False),
@@ -67,6 +69,7 @@ LIST_RE = re.compile(r"<<startlist<HEAP>>type:\{(?P<type>[^}]*)\}name:\{(?P<name
                      r"bytes:\{(?P<bytes>[^}]*)\}>>/>>")
 IF_RE = re.compile(r"<<startif<<asm:\{(?P<asm>.*?)\}>>(?P<args>.*?)>>")
 LOOP_RE = re.compile(r"<<startloop<<asm:\{(?P<asm>.*?)\}>>(?P<args>.*?)>>")
+COMMENT_RE = re.compile(r'<<COMMNT"(?P<text>[^"]*)">>/>>')
 DEF_RE = re.compile(r"<<definefunc<USER>>mco:\{(?P<name>[^}]*)\}params:\{(?P<params>[^}]*)\}>>")
 RETURN_RE = re.compile(r"<<return<<asm:\{(?P<asm>.*?)\}>>(?P<value>.*?)>>/>>")
 CALL_RE = re.compile(r"<<startfunc<FROMUSER><<asm:\{(?P<asm>.*?)\}>>mco:\{(?P<name>[^}]*)\}"
@@ -206,6 +209,10 @@ def parse_line(lineno, text):
     if text == "<<enddefine>>/>>":
         return Stmt(lineno, "enddefine")
 
+    m = COMMENT_RE.fullmatch(text)
+    if m:
+        return Stmt(lineno, "comment", {"text": m["text"][::-1]})   # written backwards
+
     m = DEF_RE.fullmatch(text)
     if m:
         return parse_def(lineno, m)
@@ -300,6 +307,17 @@ def parse_func(lineno, m):
         if not m["into"]:
             raise Punishment(lineno, "you read input and threw it away. Add <<into>>$variable.")
         return Stmt(lineno, "read", {"maxlen": int(asm_match[1]), "into": m["into"]})
+
+    if name == "rand":
+        asm_match = RAND_ASM.fullmatch(asm)
+        if not asm_match:
+            raise Punishment(lineno, "that is not the Linux x86-64 asm for getrandom. It must be:\n  "
+                             "mov rax, 318; lea rdi, [buf]; mov rsi, BYTES; mov rdx, 0; syscall")
+        if m["args"].strip():
+            raise Punishment(lineno, "rand takes no arguments. Leave the space after <<>> empty.")
+        if not m["into"]:
+            raise Punishment(lineno, "you asked for randomness and threw it away. Add <<into>>$variable.")
+        return Stmt(lineno, "rand", {"bytes": int(asm_match[1]), "into": m["into"]})
 
     if name in ("store", "load"):
         wanted = STORE_ASM if name == "store" else LOAD_ASM
@@ -455,7 +473,7 @@ def link_blocks(program):
                                  "(or something inside it is still open).")
             program[open_blocks.pop()].data["end"] = index
             continue
-        if not inside_def:
+        if not inside_def and s.kind != "comment":
             seen_code = True
         if s.kind == "return" and not inside_def:
             raise Punishment(s.lineno, "return from WHAT? You're not in a function.")
@@ -703,6 +721,21 @@ class Machine:
             elif s.kind == "libc":
                 self.libc(s)
 
+            elif s.kind == "rand":
+                entry = self.touch(d["into"], s.lineno)
+                if entry[1] not in TYPES:
+                    raise Punishment(s.lineno, f"rand gives a number. ${d['into']} can't hold one.")
+                bits = TYPES[entry[1]]
+                if d["bytes"] != bits // 8:
+                    raise Punishment(s.lineno, f"you asked getrandom for {d['bytes']} bytes, but "
+                                     f"${d['into']} is {entry[1]}: {bits // 8} bytes.")
+                value = self.rng.getrandbits(bits)
+                if value >= 2 ** (bits - 1):          # random bytes are signed, like the real thing
+                    value -= 2 ** bits
+                self.assign(d["into"], value, s.lineno)
+
+            # comment: does nothing, but it still counts as a line
+
             elif s.kind == "store":
                 lst = self.get_list(d["values"][0], s.lineno)
                 index = self.item_index(lst, d["values"][1], s.lineno)
@@ -831,7 +864,8 @@ class Machine:
         if b == 0:
             raise Punishment(lineno, "division by zero. The CPU would have crashed too.")
         q = abs(a) // abs(b)                          # idiv rounds toward zero
-        return q if (a < 0) == (b < 0) else -q
+        q = q if (a < 0) == (b < 0) else -q
+        return q if op == "div" else a - b * q       # mod: the remainder keeps a's sign
 
     def read(self, s):
         """Like the real read syscall: take at most MAXLEN characters, leave the rest waiting."""
@@ -962,7 +996,7 @@ def build_parser():
     parser.add_argument("-g", "--i-give-up", action="store_true", dest="coward",
                         help="show plain, readable error messages")
     parser.add_argument("-s", "--seed", type=int, metavar="N",
-                        help="make list garbage the same every run")
+                        help="make random numbers and list garbage the same every run")
     parser.add_argument("-V", "--version", action="version",
                         version=f"PunishMeEvenHarder++ {__version__} (no mercy granted)")
     return parser

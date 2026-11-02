@@ -342,6 +342,64 @@ class Text(unittest.TestCase):
         self.assertPunished(prog(TEXT % ("8", "s", ""), libc("printf", "$s")), "not in the C library")
 
 
+COMMENT = '<<COMMNT"%s">>/>>'
+MOD = "<<startfunc<FROMBUILTIN><<asm:{cqo; idiv rbx; mov rax, rdx}>>mco:{01101101 01101111 01100100}<<>>%s<<into>>$%s>>/>>"
+RAND = ("<<startfunc<FROMBUILTIN><<asm:{mov rax, 318; lea rdi, [buf]; mov rsi, %d; mov rdx, 0; syscall}>>"
+        "mco:{01110010 01100001 01101110 01100100}<<>><<into>>$%s>>/>>")
+
+
+class CommentsModRand(unittest.TestCase):
+    def assertPunished(self, source, fragment):
+        with self.assertRaises(pmeh.Punishment) as ctx:
+            run(source)
+        self.assertIn(fragment, ctx.exception.message)
+
+    def test_comment_is_backwards(self):
+        program = pmeh.parse(prog(COMMENT % "EID A LLOR"))
+        self.assertEqual(program[0].data["text"], "ROLL A DIE")
+
+    def test_comments_count_as_lines(self):
+        src = prog(VAR % ("x", "1"), COMMENT % "A", COMMENT % "B", COMMENT % "C", PRINT % (1, "$x"))
+        self.assertPunished(src, "forgot itself")
+
+    def test_comments_allowed_before_functions(self):
+        src = prog(COMMENT % "SNOITCNUF", *square_def(), VAR % ("x", "5"),
+                   CALL % ("square", SQ, "$x", "x"), PRINT % (1, "$x"))
+        self.assertEqual(run(src), "4\n")
+
+    def test_mod(self):
+        for written, divisor, expected in [("6", "5", "1"), ("-6", "5", "-1"), ("01", "5", "0")]:
+            # 6 means 9, 5 means 2, 01 means 10
+            src = prog(VAR % ("x", written), MOD % (f"$x,{divisor}", "x"), PRINT % (len(expected), "$x"))
+            self.assertEqual(run(src), expected + "\n", written)
+
+    def test_mod_by_zero(self):
+        self.assertPunished(prog(VAR % ("x", "1"), MOD % ("$x,0", "x")), "division by zero")
+
+    def test_rand_fills_whole_type_range(self):
+        import random
+        src = prog("<<startvar<STACK>>type:{int8}name:{x}<<>>0>>/>>", RAND % (1, "x"))
+        seen = set()
+        for seed in range(400):
+            m = pmeh.Machine(pmeh.parse(src), io.StringIO(), io.StringIO(), random.Random(seed))
+            m.run()
+            seen.add(m.vars["x"][0])
+        self.assertTrue(all(-128 <= v <= 127 for v in seen))
+        self.assertTrue(min(seen) < 0 < max(seen))
+
+    def test_rand_bytes_must_match_type(self):
+        self.assertPunished(prog(VAR % ("x", "0"), RAND % (4, "x")), "8 bytes")
+
+    def test_rand_into_text(self):
+        self.assertPunished(prog(TEXT % ("8", "s", ""), RAND % (8, "s")), "can't hold one")
+
+    def test_dice_example(self):
+        import random
+        rolls = {run_rng((ROOT / "examples" / "dice.pmeh").read_text(), random.Random(seed))
+                 for seed in range(200)}
+        self.assertEqual(rolls, {f"ROLLED: {n}\n" for n in range(1, 7)})
+
+
 class CommandLine(unittest.TestCase):
     def cli(self, *argv):
         import contextlib

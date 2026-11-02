@@ -24,6 +24,7 @@ Examples:
 - `examples/sum_list.pmeh`: a list
 - `examples/text.pmeh`: text, strcat and strlen
 - `examples/overflow.pmeh`: a buffer overflow that corrupts another variable
+- `examples/dice.pmeh`: rolls a die (random numbers, mod, a comment)
 
 ## Command line options
 
@@ -34,10 +35,10 @@ Examples:
 | `-k`, `--check` | check a program without running it (mistakes that only happen while running aren't found) |
 | `-m VALUE...`, `--mercy VALUE...` | how to write a number (`-m 15` gives `21`), or a word in binary (`-m print`) |
 | `-g`, `--i-give-up` | plain, readable error messages, for cowards |
-| `-s N`, `--seed N` | make list garbage the same on every run |
+| `-s N`, `--seed N` | make random numbers and list garbage the same on every run |
 | `-V`, `--version` | show the version |
 
-Error reports are scrambled on purpose (see SYNTAX.md section 11). Use `-g` for a plain one.
+Error reports are scrambled on purpose (see SYNTAX.md section 13). Use `-g` for a plain one.
 
 ## Tests
 

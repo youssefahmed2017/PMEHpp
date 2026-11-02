@@ -34,6 +34,8 @@ Every number is turned upside down: read the digits right to left, then flip eac
 | read | `mov rax, 0; mov rdi, 0; lea rsi, [buf]; mov rdx, MAXLEN; syscall` | `01110010 01100101 01100001 01100100` |
 | store | `mov [rbx + rcx], rax` | `01110011 01110100 01101111 01110010 01100101` |
 | load | `mov rax, [rbx + rcx]` | `01101100 01101111 01100001 01100100` |
+| mod | `cqo; idiv rbx; mov rax, rdx` (the remainder, with the sign of the first number) | `01101101 01101111 01100100` |
+| rand | `mov rax, 318; lea rdi, [buf]; mov rsi, BYTES; mov rdx, 0; syscall` | `01110010 01100001 01101110 01100100` |
 | mul | `imul rax, rbx` | `01101101 01110101 01101100` |
 | div | `cqo; idiv rbx` (rounds toward zero) | `01100100 01101001 01110110` |
 
@@ -192,7 +194,32 @@ The name after `call` must match the binary name (get it with `pmeh -m strlen`).
 - Text is passed to functions **by reference**, like lists.
 - Text can't be used in math or comparisons. Use `atoi` / `strcmp`.
 
-## 11. Error reports
+## 11. Comments
+```
+<<COMMNT"SIHT NI SEOG TNEMMOC A">>/>>
+```
+- Comment text is written **backwards**, like text. That one says "A COMMENT GOES IN THIS".
+- A comment **counts as a line** for forgetful variables. Adding a comment can make a variable
+  go 3 lines untouched, so explaining your code can break it.
+- Comments may go before function definitions.
+
+## 12. Remainder and random numbers
+**`mod`** gives the remainder of a division, with the real asm (x86-64 leaves the remainder in `rdx`):
+```
+<<startfunc<FROMBUILTIN><<asm:{cqo; idiv rbx; mov rax, rdx}>>mco:{01101101 01101111 01100100}<<>>$x,5<<into>>$r>>/>>
+```
+`$x,5` is x mod 2. Like C, the remainder has the sign of the first number: -7 mod 2 is **-1**.
+
+**`rand`** uses the real Linux `getrandom` system call (number 318):
+```
+<<startfunc<FROMBUILTIN><<asm:{mov rax, 318; lea rdi, [buf]; mov rsi, 8; mov rdx, 0; syscall}>>mco:{01110010 01100001 01101110 01100100}<<>><<into>>$x>>/>>
+```
+- `mov rsi, BYTES` must match the variable: 8 for `int64`, 4 for `int32`, 2 for `int16`, 1 for `int8`.
+- The result is random bytes, so it covers the **whole range of the type, negatives included**.
+  To get 1 to 6: `mod` by 6, make it positive, add 1. See `examples/dice.pmeh`.
+- `pmeh -s N` makes the random numbers repeat.
+
+## 13. Error reports
 Every error report contains everything you need. None of it is easy to read.
 
 - **Location:** the line number is counted **from the bottom** of the file (blank lines count),
