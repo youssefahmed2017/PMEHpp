@@ -400,6 +400,101 @@ class CommentsModRand(unittest.TestCase):
         self.assertEqual(rolls, {f"ROLLED: {n}\n" for n in range(1, 7)})
 
 
+def bincall(name, asm, args, into=None):
+    binary = " ".join(f"{ord(c):08b}" for c in name)
+    return ("<<startfunc<FROMBUILTIN><<asm:{%s}>>mco:{%s}<<>>%s%s>>/>>"
+            % (asm, binary, args, f"<<into>>${into}" if into else ""))
+
+
+def OPEN(flags, into="fd", path="$p"):
+    return bincall("open", f"mov rax, 2; lea rdi, [path]; mov rsi, {flags}; mov rdx, 420; syscall", path, into)
+
+
+def WRITE(length, args, into="n"):
+    return bincall("write", f"mov rax, 1; mov rdi, [fd]; lea rsi, [msg]; mov rdx, {length}; syscall", args, into)
+
+
+def FREAD(maxlen, into, fd="$fd"):
+    return bincall("read", f"mov rax, 0; mov rdi, [fd]; lea rsi, [buf]; mov rdx, {maxlen}; syscall", fd, into)
+
+
+def CLOSE(into="fd", fd="$fd"):
+    return bincall("close", "mov rax, 3; mov rdi, [fd]; syscall", fd, into)
+
+
+PATH = TEXT % ("01", "p", '[0null]"txt.tset"')     # "test.txt", 10 bytes
+
+
+class Files(unittest.TestCase):
+    def setUp(self):
+        import os
+        import tempfile
+        self.old_dir = os.getcwd()
+        self.tmp = tempfile.TemporaryDirectory()
+        os.chdir(self.tmp.name)
+
+    def tearDown(self):
+        import os
+        os.chdir(self.old_dir)
+        self.tmp.cleanup()
+
+    def assertPunished(self, source, fragment):
+        with self.assertRaises(pmeh.Punishment) as ctx:
+            run(source)
+        self.assertIn(fragment, ctx.exception.message)
+
+    def test_diary_example(self):
+        self.assertEqual(run_file("diary.pmeh"), "DEAR DIARY,\nI SUFFER.\n")
+        self.assertEqual(pathlib.Path("diary.txt").read_text(), "DEAR DIARY,\nI SUFFER.\n")
+
+    def test_write_returns_bytes_written(self):
+        src = prog(VAR % ("fd", "0"), VAR % ("n", "0"), PATH, OPEN(577),
+                   WRITE(2, '$fd,"HI"'), CLOSE(), PRINT % (1, "$n"))
+        self.assertEqual(run(src), "2\n")
+        self.assertEqual(pathlib.Path("test.txt").read_text(), "HI")
+
+    def test_append(self):
+        pathlib.Path("test.txt").write_text("A")
+        src = prog(VAR % ("fd", "0"), VAR % ("n", "0"), PATH, OPEN(1089), WRITE(1, '$fd,"B"'), CLOSE())
+        run(src)
+        self.assertEqual(pathlib.Path("test.txt").read_text(), "AB")
+
+    def test_open_missing_file_gives_negative_error(self):
+        src = prog(VAR % ("fd", "0"), PATH, OPEN(0), PRINT % (2, "$fd"))
+        self.assertEqual(run(src), "-2\n")              # ENOENT, like the real syscall
+
+    def test_bad_flags(self):
+        src = prog(VAR % ("fd", "0"), PATH, OPEN(3), PRINT % (3, "$fd"))
+        self.assertEqual(run(src), "-22\n")             # EINVAL
+
+    def test_write_to_closed_file(self):
+        src = prog(VAR % ("fd", "8"), VAR % ("n", "0"), WRITE(2, '$fd,"HI"'), PRINT % (2, "$n"))
+        self.assertEqual(run(src), "-9\n")              # EBADF
+
+    def test_write_to_screen_has_no_newline(self):
+        src = prog(VAR % ("n", "0"), WRITE(2, '1,"HI"'), WRITE(2, '1,"YO"'))
+        self.assertEqual(run(src), "HIYO")
+
+    def test_read_until_end_of_file(self):
+        pathlib.Path("test.txt").write_text("ABC")
+        src = prog(VAR % ("fd", "0"), PATH, OPEN(0), TEXT % ("8", "t", ""),
+                   FREAD(2, "t"), PRINT % (2, "$t"), FREAD(2, "t"), PRINT % (1, "$t"),
+                   FREAD(2, "t"), PRINT % (0, "$t"), CLOSE())
+        self.assertEqual(run(src), "AB\nC\n\n")
+
+    def test_read_bad_file_descriptor(self):
+        src = prog(VAR % ("fd", "8"), TEXT % ("8", "t", ""), FREAD(2, "t"))
+        self.assertPunished(src, "Bad file descriptor")
+
+    def test_forgot_to_close(self):
+        src = prog(VAR % ("fd", "0"), PATH, OPEN(577))
+        self.assertPunished(src, "still open")
+
+    def test_newline_position(self):
+        self.assertEqual(run(prog(PRINT % (3, '"A"[1line]"B"'))), "A\nB\n")
+        self.assertPunished(prog(PRINT % (3, '"A"[0line]"B"')), "position 1")
+
+
 class CommandLine(unittest.TestCase):
     def cli(self, *argv):
         import contextlib

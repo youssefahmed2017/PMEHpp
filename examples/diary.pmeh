@@ -1,0 +1,13 @@
+<<COMMNT"YRAID A ETIRW">>/>>
+<<startvar<STACK>>type:{int64}name:{fd}<<>>0>>/>>
+<<startvar<STACK>>type:{int64}name:{n}<<>>0>>/>>
+<<startvar<STACK>>type:{char[01]}name:{path}<<>>[0null]"txt.yraid">>/>>
+<<startfunc<FROMBUILTIN><<asm:{mov rax, 2; lea rdi, [path]; mov rsi, 577; mov rdx, 420; syscall}>>mco:{01101111 01110000 01100101 01101110}<<>>$path<<into>>$fd>>/>>
+<<startfunc<FROMBUILTIN><<asm:{mov rax, 1; mov rdi, [fd]; lea rsi, [msg]; mov rdx, 22; syscall}>>mco:{01110111 01110010 01101001 01110100 01100101}<<>>$fd,"DEAR"[4word]"DIARY,"[11line]"I"[13word]"SUFFER."[21line]<<into>>$n>>/>>
+<<startfunc<FROMBUILTIN><<asm:{mov rax, 3; mov rdi, [fd]; syscall}>>mco:{01100011 01101100 01101111 01110011 01100101}<<>>$fd<<into>>$fd>>/>>
+<<startfunc<FROMBUILTIN><<asm:{mov rax, 2; lea rdi, [path]; mov rsi, 0; mov rdx, 420; syscall}>>mco:{01101111 01110000 01100101 01101110}<<>>$path<<into>>$fd>>/>>
+<<startvar<STACK>>type:{char[09]}name:{page}<<>>>>/>>
+<<startfunc<FROMBUILTIN><<asm:{mov rax, 0; mov rdi, [fd]; lea rsi, [buf]; mov rdx, 22; syscall}>>mco:{01110010 01100101 01100001 01100100}<<>>$fd<<into>>$page>>/>>
+<<startfunc<FROMBUILTIN><<asm:{mov rax, 3; mov rdi, [fd]; syscall}>>mco:{01100011 01101100 01101111 01110011 01100101}<<>>$fd<<into>>$fd>>/>>
+<<startfunc<FROMBUILTIN><<asm:{mov rax, 1; mov rdi, [fd]; lea rsi, [msg]; mov rdx, 22; syscall}>>mco:{01110111 01110010 01101001 01110100 01100101}<<>>1,$page<<into>>$fd>>/>>
+<EXCPROGRAM>VALIDATE:COMMNT"I'd rather die than code in this programming language"[NOMERCYGRANTED]

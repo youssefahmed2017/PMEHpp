@@ -5,6 +5,7 @@ Run `python pmeh.py -h` for the command line options. The full rules are in SYNT
 """
 import argparse
 import codecs
+import os
 import random
 import re
 import sys
@@ -31,7 +32,13 @@ TYPES = {"int8": 8, "int16": 16, "int32": 32, "int64": 64}
 
 PRINT_ASM = re.compile(r"mov rax, 1; mov rdi, 1; lea rsi, \[msg\]; mov rdx, (\d+); syscall")
 RAND_ASM = re.compile(r"mov rax, 318; lea rdi, \[buf\]; mov rsi, (\d+); mov rdx, 0; syscall")
-READ_ASM = re.compile(r"mov rax, 0; mov rdi, 0; lea rsi, \[buf\]; mov rdx, (\d+); syscall")
+READ_ASM = re.compile(r"mov rax, 0; mov rdi, (0|\[fd\]); lea rsi, \[buf\]; mov rdx, (\d+); syscall")
+WRITE_ASM = re.compile(r"mov rax, 1; mov rdi, \[fd\]; lea rsi, \[msg\]; mov rdx, (\d+); syscall")
+OPEN_ASM = re.compile(r"mov rax, 2; lea rdi, \[path\]; mov rsi, (\d+); mov rdx, (\d+); syscall")
+CLOSE_ASM = "mov rax, 3; mov rdi, [fd]; syscall"
+# Linux open() flags, as plain numbers, the way the kernel sees them
+O_WRONLY, O_RDWR, O_CREAT, O_TRUNC, O_APPEND = 1, 2, 64, 512, 1024
+EBADF, EINVAL = 9, 22
 MATH_ASM = {
     "add": "add rax, rbx",
     "sub": "sub rax, rbx",
@@ -41,7 +48,7 @@ MATH_ASM = {
 }
 STORE_ASM = "mov [rbx + rcx], rax"
 LOAD_ASM = "mov rax, [rbx + rcx]"
-BUILTINS = {"print", "read", "rand", "store", "load", *MATH_ASM}
+BUILTINS = {"print", "read", "write", "open", "close", "rand", "store", "load", *MATH_ASM}
 LIBC = {  # name: (number of arguments, gives a result back)
     "strlen": (1, True),
     "strcat": (2, False),
@@ -77,7 +84,8 @@ CALL_RE = re.compile(r"<<startfunc<FROMUSER><<asm:\{(?P<asm>.*?)\}>>mco:\{(?P<na
 LIBC_RE = re.compile(r"<<startfunc<FROMLIBC><<asm:\{(?P<asm>.*?)\}>>mco:\{(?P<name>[^}]*)\}"
                      r"<<>>(?P<args>.*?)(?:<<into>>\$(?P<into>" + NAME + r"))?>>/>>")
 TEXT_TOKEN = re.compile(r'"(?P<text>[^"]*)"|\[(?P<space>\d+)word\]|(?P<null>\[0null\])')
-PRINT_TOKEN = re.compile(r'"(?P<text>[^"]*)"|\[(?P<space>\d+)word\]|\$(?P<var>' + NAME + r")")
+PRINT_TOKEN = re.compile(r'"(?P<text>[^"]*)"|\[(?P<space>\d+)word\]|\[(?P<line>\d+)line\]'
+                         r'|\$(?P<var>' + NAME + r")")
 
 INSULTS = [
     "Have you considered a career in something without keyboards?",
@@ -301,12 +309,52 @@ def parse_func(lineno, m):
         asm_match = READ_ASM.fullmatch(asm)
         if not asm_match:
             raise Punishment(lineno, "that is not the Linux x86-64 asm for reading. It must be:\n  "
-                             "mov rax, 0; mov rdi, 0; lea rsi, [buf]; mov rdx, MAXLEN; syscall")
-        if m["args"].strip():
-            raise Punishment(lineno, "read takes no arguments. Leave the space after <<>> empty.")
+                             "mov rax, 0; mov rdi, 0; lea rsi, [buf]; mov rdx, MAXLEN; syscall\n"
+                             "or, for a file: mov rax, 0; mov rdi, [fd]; lea rsi, [buf]; mov rdx, MAXLEN; syscall")
         if not m["into"]:
             raise Punishment(lineno, "you read input and threw it away. Add <<into>>$variable.")
-        return Stmt(lineno, "read", {"maxlen": int(asm_match[1]), "into": m["into"]})
+        if asm_match[1] == "0":
+            if m["args"].strip():
+                raise Punishment(lineno, "reading the keyboard (mov rdi, 0) takes no arguments.")
+            fd = ("num", 0)
+        else:
+            fd = parse_values(m["args"], lineno, "reading a file (mov rdi, [fd])", 1, "$fd")[0]
+        return Stmt(lineno, "read", {"maxlen": int(asm_match[2]), "into": m["into"], "fd": fd})
+
+    if name == "write":
+        asm_match = WRITE_ASM.fullmatch(asm)
+        if not asm_match:
+            raise Punishment(lineno, "that is not the Linux x86-64 asm for write. It must be:\n  "
+                             "mov rax, 1; mov rdi, [fd]; lea rsi, [msg]; mov rdx, LENGTH; syscall")
+        if not m["into"]:
+            raise Punishment(lineno, "write tells you how many bytes it wrote, and you ignored it. "
+                             "Add <<into>>$variable.")
+        fd, comma, rest = m["args"].partition(",")
+        if not comma:
+            raise Punishment(lineno, 'write needs the file first, then what to write: $fd,"TEXT"')
+        return Stmt(lineno, "write", {"length": int(asm_match[1]), "into": m["into"],
+                                      "fd": parse_value(fd, lineno),
+                                      "parts": parse_print_args(rest, lineno)})
+
+    if name == "open":
+        asm_match = OPEN_ASM.fullmatch(asm)
+        if not asm_match:
+            raise Punishment(lineno, "that is not the Linux x86-64 asm for open. It must be:\n  "
+                             "mov rax, 2; lea rdi, [path]; mov rsi, FLAGS; mov rdx, MODE; syscall")
+        if not m["into"]:
+            raise Punishment(lineno, "open gives you a file descriptor and you threw it away. "
+                             "Add <<into>>$variable.")
+        path = parse_values(m["args"], lineno, "open", 1, "$path")[0]
+        return Stmt(lineno, "open", {"flags": int(asm_match[1]), "mode": int(asm_match[2]),
+                                     "path": path, "into": m["into"]})
+
+    if name == "close":
+        if asm != CLOSE_ASM:
+            raise Punishment(lineno, f"that is not the Linux x86-64 asm for close. It must be: {CLOSE_ASM}")
+        if not m["into"]:
+            raise Punishment(lineno, "close tells you if it worked, and you ignored it. Add <<into>>$variable.")
+        fd = parse_values(m["args"], lineno, "close", 1, "$fd")[0]
+        return Stmt(lineno, "close", {"fd": fd, "into": m["into"]})
 
     if name == "rand":
         asm_match = RAND_ASM.fullmatch(asm)
@@ -441,13 +489,15 @@ def parse_print_args(args, lineno):
         tok = PRINT_TOKEN.match(args, pos)
         if not tok:
             raise Punishment(lineno, f"I can't print this part: {args[pos:]!r}. "
-                             'Use "TEXT", [Nword] and $variables only.')
+                             'Use "TEXT", [Nword], [Nline] and $variables only.')
         if tok["text"] is not None:
             if " " in tok["text"]:
                 raise Punishment(lineno, "real spaces are not allowed in text. Use [Nword].")
             parts.append(("text", tok["text"]))
         elif tok["space"] is not None:
             parts.append(("space", int(tok["space"])))
+        elif tok["line"] is not None:
+            parts.append(("line", int(tok["line"])))
         else:
             parts.append(("var", tok["var"]))
         pos = tok.end()
@@ -534,6 +584,7 @@ class Machine:
         self.forgotten = set()
         self.step = 0
         self.frames = []      # saved callers while a function runs
+        self.files = {}       # PMEH file descriptor -> real file descriptor
 
     def touch(self, name, lineno):
         if name not in self.vars:
@@ -668,6 +719,18 @@ class Machine:
             raise Punishment(lineno, f"{value} doesn't fit in {type_} ({low} to {high}). Overflow.")
 
     def run(self):
+        try:
+            self.execute()
+            if self.files:
+                last = self.program[-1].lineno + 1 if self.program else 1
+                raise Punishment(last, f"the program ended with {len(self.files)} file(s) still open "
+                                 f"(file descriptor {', '.join(map(str, sorted(self.files)))}). Close the door behind you.")
+        finally:
+            for real in self.files.values():
+                os.close(real)
+            self.files.clear()
+
+    def execute(self):
         pc = 0
         program = self.program
         while pc < len(program):
@@ -749,6 +812,20 @@ class Machine:
                 lst = self.get_list(d["values"][0], s.lineno)
                 index = self.item_index(lst, d["values"][1], s.lineno)
                 self.assign(d["into"], lst.items[index], s.lineno)
+
+            elif s.kind == "open":
+                self.assign(d["into"], self.open_file(s), s.lineno)
+
+            elif s.kind == "close":
+                fd = self.number(d["fd"], s.lineno)
+                result = -EBADF
+                if fd in self.files:
+                    os.close(self.files.pop(fd))
+                    result = 0
+                self.assign(d["into"], result, s.lineno)
+
+            elif s.kind == "write":
+                self.assign(d["into"], self.write(s), s.lineno)
 
             elif s.kind == "read":
                 typed = self.read(s)
@@ -867,8 +944,57 @@ class Machine:
         q = q if (a < 0) == (b < 0) else -q
         return q if op == "div" else a - b * q       # mod: the remainder keeps a's sign
 
+    def open_file(self, s):
+        """The real open syscall: a file descriptor, or a negative error number."""
+        d = s.data
+        path = self.c_string(self.get_text(d["path"], s.lineno))
+        flags, mode = d["flags"], d["mode"]
+        access = flags & 3
+        if access == 3 or flags & ~(3 | O_CREAT | O_TRUNC | O_APPEND) or mode > 0o7777:
+            return -EINVAL
+        real_flags = [os.O_RDONLY, os.O_WRONLY, os.O_RDWR][access]
+        for linux, python in ((O_CREAT, os.O_CREAT), (O_TRUNC, os.O_TRUNC), (O_APPEND, os.O_APPEND)):
+            if flags & linux:
+                real_flags |= python
+        try:
+            real = os.open(path, real_flags, mode)
+        except OSError as e:
+            return -(e.errno or EINVAL)
+        fd = 3                                        # like Linux: the lowest free number
+        while fd in self.files:
+            fd += 1
+        self.files[fd] = real
+        return fd
+
+    def write(self, s):
+        text = self.build_text(s)
+        fd = self.number(s.data["fd"], s.lineno)
+        if fd in (1, 2):
+            stream = self.out if fd == 1 else sys.stderr
+            stream.write(text)
+            stream.flush()
+            return len(text.encode())
+        if fd not in self.files:
+            return -EBADF
+        try:
+            return os.write(self.files[fd], text.encode())
+        except OSError as e:
+            return -(e.errno or EBADF)
+
     def read(self, s):
         """Like the real read syscall: take at most MAXLEN characters, leave the rest waiting."""
+        fd = self.number(s.data["fd"], s.lineno)
+        if fd != 0:
+            if fd not in self.files:
+                raise Punishment(s.lineno, f"read from file descriptor {fd}: Bad file descriptor. "
+                                 "Did open give you a negative number?")
+            try:
+                data = os.read(self.files[fd], s.data["maxlen"]).decode("utf-8", errors="replace")
+            except OSError as e:
+                raise Punishment(s.lineno, f"read from file descriptor {fd} failed: {e.strerror}.")
+            if not data and self.touch(s.data["into"], s.lineno)[1] != "char":
+                raise Punishment(s.lineno, "read got nothing: the end of the file. That's not a number.")
+            return data                               # files keep their newlines
         if not self.pending:
             self.out.flush()
             self.pending = self.inp.readline()
@@ -883,6 +1009,9 @@ class Machine:
         return typed
 
     def print(self, s):
+        print(self.build_text(s), file=self.out, flush=True)
+
+    def build_text(self, s):
         text = ""
         for kind, x in s.data["parts"]:
             if kind == "text":
@@ -892,6 +1021,11 @@ class Machine:
                     raise Punishment(s.lineno, f"this space is at position {len(text)}, "
                                      f"but you wrote [{x}word].")
                 text += " "
+            elif kind == "line":
+                if x != len(text):
+                    raise Punishment(s.lineno, f"this new line is at position {len(text)}, "
+                                     f"but you wrote [{x}line].")
+                text += "\n"
             else:
                 value = self.touch(x, s.lineno)[0]
                 if isinstance(value, PMEHList):
@@ -900,7 +1034,7 @@ class Machine:
         if s.data["length"] != len(text):
             raise Punishment(s.lineno, f"mov rdx, {s.data['length']} but the text {text!r} "
                              f"is {len(text)} characters long.")
-        print(text, file=self.out, flush=True)
+        return text
 
 
 # ---------------------------------------------------------------- error reports
