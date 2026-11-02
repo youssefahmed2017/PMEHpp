@@ -151,7 +151,48 @@ Write and read:
 - Lists are passed to functions **by reference**: the function changes the real list.
 - Lists can't be printed, copied into variables, or used in math. Work with items.
 
-## 10. Error reports
+## 10. Text
+Text works like in C: a buffer of bytes, and the text ends at a special 0 byte, the **terminator**.
+
+```
+<<startvar<STACK>>type:{char[91]}name:{s}<<>>[0null]"OLLEH">>/>>
+```
+- `char[N]` is a buffer of N bytes (N is an upside-down number: `91` = 16).
+- **Text is written backwards.** `[0null]"OLLEH"` means `HELLO` followed by the terminator.
+  The whole thing is reversed, so the terminator, which ends the real text, comes first.
+- Spaces are `[Nword]`, and **N counts in the real (forwards) text**:
+  `[0null]"UOY"[2word]"IH"` is `HI YOU`.
+- `<<>>` with nothing after it leaves the buffer full of garbage. `<<>>$t` copies another text.
+- Text in `print` is still written forwards. Only text variables are backwards.
+
+### Things C does that PMEH does too
+- **No terminator?** Nothing stops you. Reading the text (print, strlen…) keeps going past the end
+  into garbage: `HIbanana@i-wanna-cry…`, different every run.
+- **Too long for the buffer?** Nothing stops you either. The extra bytes silently overwrite the
+  **variables declared after it**: text gets overwritten, numbers become garbage, list items too.
+  If the overflow goes past your last variable: `*** stack smashing detected ***`.
+
+### C library functions
+```
+<<startfunc<FROMLIBC><<asm:{call strlen}>>mco:{01110011 01110100 01110010 01101100 01100101 01101110}<<>>$s<<into>>$n>>/>>
+```
+The name after `call` must match the binary name (get it with `pmeh -m strlen`).
+
+| Function | Arguments | Does | Result |
+|---|---|---|---|
+| `strlen` | text | length, without the terminator | number |
+| `strcat` | text, text | glues the second onto the end of the first (can overflow!) | nothing |
+| `strcmp` | text, text | compares | **0 if equal**, -1 or 1 otherwise |
+| `atoi` | text | text to number (`"12"` → 12). Not a number? **0**, like C | number |
+| `itoa` | number | number to text | text |
+| `charat` | text, byte | the character at that byte, as its ASCII code (`A` → 65) | number |
+
+- Digits inside text are not upside down: the text `12` is twelve.
+- `read` into a text variable stores what was typed (without Enter) plus a terminator.
+- Text is passed to functions **by reference**, like lists.
+- Text can't be used in math or comparisons. Use `atoi` / `strcmp`.
+
+## 11. Error reports
 Every error report contains everything you need. None of it is easy to read.
 
 - **Location:** the line number is counted **from the bottom** of the file (blank lines count),

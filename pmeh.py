@@ -40,6 +40,14 @@ MATH_ASM = {
 STORE_ASM = "mov [rbx + rcx], rax"
 LOAD_ASM = "mov rax, [rbx + rcx]"
 BUILTINS = {"print", "read", "store", "load", *MATH_ASM}
+LIBC = {  # name: (number of arguments, gives a result back)
+    "strlen": (1, True),
+    "strcat": (2, False),
+    "strcmp": (2, True),
+    "atoi": (1, True),
+    "itoa": (1, True),
+    "charat": (2, True),
+}
 CMP_ASM = re.compile(r"cmp rax, rbx; (j[a-z]+) (\w+)")
 JUMPS = {  # jump is TAKEN when this is true
     "jg": lambda a, b: a > b,
@@ -63,6 +71,9 @@ DEF_RE = re.compile(r"<<definefunc<USER>>mco:\{(?P<name>[^}]*)\}params:\{(?P<par
 RETURN_RE = re.compile(r"<<return<<asm:\{(?P<asm>.*?)\}>>(?P<value>.*?)>>/>>")
 CALL_RE = re.compile(r"<<startfunc<FROMUSER><<asm:\{(?P<asm>.*?)\}>>mco:\{(?P<name>[^}]*)\}"
                      r"<<>>(?P<args>.*?)(?:<<into>>\$(?P<into>" + NAME + r"))?>>/>>")
+LIBC_RE = re.compile(r"<<startfunc<FROMLIBC><<asm:\{(?P<asm>.*?)\}>>mco:\{(?P<name>[^}]*)\}"
+                     r"<<>>(?P<args>.*?)(?:<<into>>\$(?P<into>" + NAME + r"))?>>/>>")
+TEXT_TOKEN = re.compile(r'"(?P<text>[^"]*)"|\[(?P<space>\d+)word\]|(?P<null>\[0null\])')
 PRINT_TOKEN = re.compile(r'"(?P<text>[^"]*)"|\[(?P<space>\d+)word\]|\$(?P<var>' + NAME + r")")
 
 INSULTS = [
@@ -85,6 +96,17 @@ class PMEHList:
         self.type = type_
         self.items = items
         self.item_bytes = TYPES[type_] // 8
+
+
+class TextBuf:
+    """A char[N] buffer: N bytes. Text ends at the first "\\0" (if there is one)."""
+    def __init__(self, size, data):
+        self.size = size
+        self.data = data
+
+
+class CText(str):
+    """Text produced by a function (itoa), with its terminator."""
 
 
 class Punishment(Exception):
@@ -208,6 +230,8 @@ def parse_line(lineno, text):
         return Stmt(lineno, "call", {"name": name, "args": args, "into": m["into"]})
 
     m = VAR_RE.fullmatch(text)
+    if m and re.fullmatch(r"char\[.*\]", m["type"]):
+        return parse_text_var(lineno, m)
     if m:
         if m["type"] not in TYPES:
             raise Punishment(lineno, f"'{m['type']}' is not a type. Pick one: {', '.join(TYPES)}.")
@@ -242,6 +266,10 @@ def parse_line(lineno, text):
     m = FUNC_RE.fullmatch(text)
     if m:
         return parse_func(lineno, m)
+
+    m = LIBC_RE.fullmatch(text)
+    if m:
+        return parse_libc(lineno, m)
 
     raise Punishment(lineno, "I have no idea what this line is supposed to be.")
 
@@ -292,6 +320,78 @@ def parse_func(lineno, m):
         raise Punishment(lineno, f"{name} makes a result and you threw it away. Add <<into>>$variable.")
     return Stmt(lineno, "math", {"op": name, "into": m["into"],
                                  "values": parse_two_values(m["args"], lineno, name)})
+
+
+def parse_text_var(lineno, m):
+    size_written = m["type"][5:-1].strip()
+    if not re.fullmatch(r"\d+", size_written):
+        raise Punishment(lineno, f"char[{size_written}] needs a plain number of bytes inside the brackets.")
+    size = flip_number(size_written, lineno)
+    if size <= 0:
+        raise Punishment(lineno, f"char[{size_written}] is {size} bytes. Text needs room to exist.")
+    if size > MAX_LIST_BYTES:
+        raise Punishment(lineno, f"out of memory. Nobody needs {size} bytes of text.")
+    if not re.fullmatch(NAME, m["name"]):
+        raise Punishment(lineno, f"'{m['name']}' is not a valid variable name.")
+    raw = m["value"].strip()
+    if not raw:
+        value = ("empty", None)
+    elif re.fullmatch(r"\$" + NAME, raw):
+        value = ("var", raw[1:])
+    else:
+        value = ("text", parse_text_literal(raw, lineno))
+    return Stmt(lineno, "text", {"size": size, "name": m["name"], "value": value})
+
+
+def parse_text_literal(written, lineno):
+    """Text is written backwards: undo it. Returns the real characters, terminators included."""
+    parts, pos = [], 0
+    while pos < len(written):
+        tok = TEXT_TOKEN.match(written, pos)
+        if not tok:
+            raise Punishment(lineno, f"I can't understand this text: {written[pos:]!r}. "
+                             'Use "TEXT", [Nword] and [0null] only.')
+        if tok["text"] is not None:
+            if " " in tok["text"]:
+                raise Punishment(lineno, "real spaces are not allowed in text. Use [Nword].")
+            parts.append(("text", tok["text"]))
+        elif tok["space"] is not None:
+            parts.append(("space", int(tok["space"])))
+        else:
+            parts.append(("null", None))
+        pos = tok.end()
+    real = ""
+    for kind, x in reversed(parts):
+        if kind == "text":
+            real += x[::-1]
+        elif kind == "null":
+            real += "\0"
+        else:
+            if x != len(real):
+                raise Punishment(lineno, f"this space is at position {len(real)} of the real "
+                                 f"(forwards) text, but you wrote [{x}word].")
+            real += " "
+    return real
+
+
+def parse_libc(lineno, m):
+    name = decode_binary(m["name"], lineno)
+    asm = re.fullmatch(r"call (\S+)", normalize_asm(m["asm"]))
+    if not asm:
+        raise Punishment(lineno, f"the asm for calling a C library function is: call {name}")
+    if asm[1] != name.lower():
+        raise Punishment(lineno, f"your asm calls '{asm[1]}' but your binary spells '{name}'. Pick one.")
+    if name not in LIBC:
+        raise Punishment(lineno, f"'{name}' is not in the C library. Choose from: {', '.join(LIBC)}.")
+    count, returns = LIBC[name]
+    args = [parse_value(a, lineno) for a in m["args"].split(",")] if m["args"].strip() else []
+    if len(args) != count:
+        raise Punishment(lineno, f"{name} takes {count} argument(s), you gave {len(args)}.")
+    if returns and not m["into"]:
+        raise Punishment(lineno, f"{name} gives a result and you threw it away. Add <<into>>$variable.")
+    if not returns and m["into"]:
+        raise Punishment(lineno, f"{name} gives nothing back. Drop the <<into>>.")
+    return Stmt(lineno, "libc", {"name": name, "args": args, "into": m["into"]})
 
 
 def parse_def(lineno, m):
@@ -441,9 +541,11 @@ class Machine:
         value = self.value(v, lineno)
         if isinstance(value, PMEHList):
             raise Punishment(lineno, f"${v[1]} is a list, not a number. Load an item out of it first.")
+        if isinstance(value, TextBuf):
+            raise Punishment(lineno, f"${v[1]} is text, not a number. Use atoi.")
         if isinstance(value, Garbage):
             raise Punishment(lineno, f"you tried to use {str(value)!r} as a number. That's garbage "
-                             "from a list item you never stored anything in.")
+                             "from memory you never stored anything in.")
         return value
 
     def assign(self, name, value, lineno):
@@ -452,8 +554,70 @@ class Machine:
             raise Punishment(lineno, f"${name} is a list. You can't pour a single value into it. Use store.")
         if isinstance(value, PMEHList):
             raise Punishment(lineno, f"a list can't be put into the variable ${name}.")
+        if entry[1] == "char":
+            if isinstance(value, TextBuf):
+                value = CText(self.c_string(value) + "\0")
+            if not isinstance(value, CText):
+                raise Punishment(lineno, f"${name} is text. {str(value)!r} isn't. Use itoa.")
+            self.write_text(name, list(value), lineno)
+            return
+        if isinstance(value, (TextBuf, CText)):
+            raise Punishment(lineno, f"${name} holds numbers. Text doesn't go in it. Use atoi.")
         self.check_range(value, entry[1], lineno)
         entry[0] = value
+
+    # -- text --------------------------------------------------------------
+
+    def garbage_chars(self, count):
+        junk = ""
+        while len(junk) < count:
+            junk += self.rng.choice(GARBAGE_JUNK)
+        return list(junk[:count])
+
+    def c_string(self, buf):
+        """Read text the C way: up to the first \\0. No \\0? Keep reading into whatever is next."""
+        if "\0" in buf.data:
+            return "".join(buf.data[:buf.data.index("\0")])
+        return "".join(buf.data) + "".join(self.garbage_chars(self.rng.randint(3, 20)))
+
+    def get_text(self, v, lineno):
+        value = self.value(v, lineno)
+        if not isinstance(value, TextBuf):
+            what = f"${v[1]}" if v[0] == "var" else str(v[1])
+            raise Punishment(lineno, f"{what} isn't text.")
+        return value
+
+    def write_text(self, name, chars, lineno):
+        """Write bytes into a buffer. Whatever doesn't fit spills into the next variables."""
+        buf = self.vars[name][0]
+        fits = chars[:buf.size]
+        buf.data[:len(fits)] = fits
+        if len(chars) > buf.size:
+            self.spill(name, chars[buf.size:], lineno)
+
+    def spill(self, after, chars, lineno):
+        names = list(self.vars)
+        for name in names[names.index(after) + 1:]:
+            entry = self.vars[name]
+            if entry[1] == "char":
+                buf = entry[0]
+                chunk, chars = chars[:buf.size], chars[buf.size:]
+                buf.data[:len(chunk)] = chunk
+            elif entry[1] == "list":
+                lst = entry[0]
+                for i in range(len(lst.items)):
+                    chunk, chars = chars[:lst.item_bytes], chars[lst.item_bytes:]
+                    if not chunk:
+                        break
+                    lst.items[i] = Garbage("".join(chunk))
+            else:
+                size = TYPES[entry[1]] // 8
+                chunk, chars = chars[:size], chars[size:]
+                entry[0] = Garbage("".join(chunk))
+            if not chars:
+                return
+        raise Punishment(lineno, "*** stack smashing detected ***: terminated. "
+                         "Your text overflowed past every variable you have.")
 
     def get_list(self, v, lineno):
         value = self.value(v, lineno)
@@ -500,6 +664,8 @@ class Machine:
                 value = self.value(d["value"], s.lineno)
                 if isinstance(value, PMEHList):
                     raise Punishment(s.lineno, "a list can't be copied into a variable.")
+                if isinstance(value, TextBuf):
+                    raise Punishment(s.lineno, f"{d['type']} holds numbers. Text doesn't go in it. Use atoi.")
                 self.check_range(value, d["type"], s.lineno)
                 self.vars[d["name"]] = [value, d["type"], self.step]
                 self.forgotten.discard(d["name"])
@@ -521,12 +687,28 @@ class Machine:
                 self.vars[d["name"]] = [PMEHList(d["type"], items), "list", self.step]
                 self.forgotten.discard(d["name"])
 
+            elif s.kind == "text":
+                kind, x = d["value"]
+                chars = None
+                if kind == "text":
+                    chars = list(x)
+                elif kind == "var":
+                    chars = list(self.c_string(self.get_text(d["value"], s.lineno)) + "\0")
+                self.vars[d["name"]] = [TextBuf(d["size"], self.garbage_chars(d["size"])),
+                                        "char", self.step]
+                self.forgotten.discard(d["name"])
+                if chars is not None:
+                    self.write_text(d["name"], chars, s.lineno)
+
+            elif s.kind == "libc":
+                self.libc(s)
+
             elif s.kind == "store":
                 lst = self.get_list(d["values"][0], s.lineno)
                 index = self.item_index(lst, d["values"][1], s.lineno)
                 value = self.value(d["values"][2], s.lineno)
-                if isinstance(value, PMEHList):
-                    raise Punishment(s.lineno, "you can't store a list inside a list.")
+                if isinstance(value, (PMEHList, TextBuf)):
+                    raise Punishment(s.lineno, "lists hold numbers. You can't store a list or text in one.")
                 self.check_range(value, lst.type, s.lineno)
                 lst.items[index] = value
 
@@ -536,7 +718,14 @@ class Machine:
                 self.assign(d["into"], lst.items[index], s.lineno)
 
             elif s.kind == "read":
-                self.assign(d["into"], self.read(s), s.lineno)
+                typed = self.read(s)
+                if self.touch(d["into"], s.lineno)[1] == "char":
+                    self.assign(d["into"], CText(typed + "\0"), s.lineno)
+                else:
+                    if not re.fullmatch(r"-?\d+", typed):
+                        raise Punishment(s.lineno, f"the user typed {typed!r}. That's not a number. "
+                                         "Even the user is bad at this.")
+                    self.assign(d["into"], int(typed), s.lineno)
 
             elif s.kind == "math":
                 a, b = (self.number(v, s.lineno) for v in d["values"])
@@ -585,6 +774,8 @@ class Machine:
         for name, value in zip(func.data["params"], args):
             if isinstance(value, PMEHList):           # lists are passed by reference
                 new_vars[name] = [value, "list", self.step]
+            elif isinstance(value, TextBuf):          # so is text (it's a char* in C)
+                new_vars[name] = [value, "char", self.step]
             else:
                 self.check_range(value, "int64", s.lineno)
                 new_vars[name] = [value, "int64", self.step]
@@ -603,6 +794,32 @@ class Machine:
             entry[2] += elapsed
         self.assign(frame["into"], value, frame["lineno"])
         return frame["return_to"]
+
+    def libc(self, s):
+        d, line = s.data, s.lineno
+        a = d["args"]
+        name = d["name"]
+        if name == "strlen":
+            self.assign(d["into"], len(self.c_string(self.get_text(a[0], line))), line)
+        elif name == "strcat":
+            dest = self.get_text(a[0], line)
+            joined = self.c_string(dest) + self.c_string(self.get_text(a[1], line)) + "\0"
+            self.write_text(a[0][1], list(joined), line)
+        elif name == "strcmp":
+            x, y = (self.c_string(self.get_text(v, line)) for v in a)
+            self.assign(d["into"], (x > y) - (x < y), line)
+        elif name == "atoi":
+            m = re.match(r"\s*([+-]?\d+)", self.c_string(self.get_text(a[0], line)))
+            self.assign(d["into"], int(m[1]) if m else 0, line)   # like C: not a number? 0.
+        elif name == "itoa":
+            self.assign(d["into"], CText(str(self.number(a[0], line)) + "\0"), line)
+        elif name == "charat":
+            buf = self.get_text(a[0], line)
+            i = self.number(a[1], line)
+            if not 0 <= i < buf.size:
+                raise Punishment(line, f"Segmentation fault (core dumped). Byte {i} is outside "
+                                 f"the text's {buf.size} bytes.")
+            self.assign(d["into"], ord(buf.data[i]), line)
 
     def math(self, op, a, b, lineno):
         if op == "add":
@@ -626,13 +843,10 @@ class Machine:
         chunk = self.pending[:s.data["maxlen"]]
         self.pending = self.pending[s.data["maxlen"]:]
         typed = chunk.rstrip("\n")
-        if not typed:
+        if not typed and self.touch(s.data["into"], s.lineno)[1] != "char":
             raise Punishment(s.lineno, f"read got {chunk!r}, which is not a number. "
                              "(Leftover characters from an earlier read count too.)")
-        if not re.fullmatch(r"-?\d+", typed):
-            raise Punishment(s.lineno, f"the user typed {typed!r}. That's not a number. "
-                             "Even the user is bad at this.")
-        return int(typed)
+        return typed
 
     def print(self, s):
         text = ""
@@ -648,7 +862,7 @@ class Machine:
                 value = self.touch(x, s.lineno)[0]
                 if isinstance(value, PMEHList):
                     raise Punishment(s.lineno, f"${x} is a list. Print its items one at a time.")
-                text += str(value)
+                text += self.c_string(value) if isinstance(value, TextBuf) else str(value)
         if s.data["length"] != len(text):
             raise Punishment(s.lineno, f"mov rdx, {s.data['length']} but the text {text!r} "
                              f"is {len(text)} characters long.")

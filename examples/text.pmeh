@@ -1,0 +1,8 @@
+<<startvar<STACK>>type:{char[91]}name:{s}<<>>[0null]"OLLEH">>/>>
+<<startvar<STACK>>type:{char[8]}name:{t}<<>>[0null]"DLROW"[0word]>>/>>
+<<startfunc<FROMLIBC><<asm:{call strcat}>>mco:{01110011 01110100 01110010 01100011 01100001 01110100}<<>>$s,$t>>/>>
+<<startvar<STACK>>type:{int64}name:{n}<<>>0>>/>>
+<<startfunc<FROMLIBC><<asm:{call strlen}>>mco:{01110011 01110100 01110010 01101100 01100101 01101110}<<>>$s<<into>>$n>>/>>
+<<startfunc<FROMBUILTIN><<asm:{mov rax, 1; mov rdi, 1; lea rsi, [msg]; mov rdx, 11; syscall}>>mco:{01110000 01110010 01101001 01101110 01110100}<<>>$s>>/>>
+<<startfunc<FROMBUILTIN><<asm:{mov rax, 1; mov rdi, 1; lea rsi, [msg]; mov rdx, 10; syscall}>>mco:{01110000 01110010 01101001 01101110 01110100}<<>>"LENGTH:"[7word]$n>>/>>
+<EXCPROGRAM>VALIDATE:COMMNT"I'd rather die than code in this programming language"[NOMERCYGRANTED]

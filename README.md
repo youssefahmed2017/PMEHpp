@@ -17,6 +17,8 @@ Examples:
 - `examples/square.pmeh`: a function
 - `examples/factorial.pmeh`: a function that calls itself (recursion)
 - `examples/sum_list.pmeh`: a list
+- `examples/text.pmeh`: text, strcat and strlen
+- `examples/overflow.pmeh`: a buffer overflow that corrupts another variable
 
 ## Command line options
 
@@ -30,7 +32,7 @@ Examples:
 | `-s N`, `--seed N` | make list garbage the same on every run |
 | `-V`, `--version` | show the version |
 
-Error reports are scrambled on purpose (see SYNTAX.md section 10). Use `-g` for a plain one.
+Error reports are scrambled on purpose (see SYNTAX.md section 11). Use `-g` for a plain one.
 
 ## Tests
 

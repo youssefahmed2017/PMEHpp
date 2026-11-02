@@ -177,6 +177,9 @@ class FakeRng:
     def choice(self, options):
         return self.junk
 
+    def randint(self, low, high):
+        return low
+
 
 def run_rng(source, rng):
     out = io.StringIO()
@@ -244,6 +247,91 @@ class Lists(unittest.TestCase):
                    LIST % ("int64", "8"), VAR % ("r", "0"), CALL % ("fill", fill, "$xs", "r"),
                    LOAD % ("$xs,0", "r"), PRINT % (1, "$r"))
         self.assertEqual(run(src), "9\n")
+
+
+TEXT = "<<startvar<STACK>>type:{char[%s]}name:{%s}<<>>%s>>/>>"
+LIBCALL = "<<startfunc<FROMLIBC><<asm:{call %s}>>mco:{%s}<<>>%s%s>>/>>"
+
+
+def libc(name, args, into=None):
+    binary = " ".join(f"{ord(c):08b}" for c in name)
+    return LIBCALL % (name, binary, args, f"<<into>>${into}" if into else "")
+
+
+class Text(unittest.TestCase):
+    def assertPunished(self, source, fragment, rng=None):
+        with self.assertRaises(pmeh.Punishment) as ctx:
+            run_rng(source, rng) if rng else run(source)
+        self.assertIn(fragment, ctx.exception.message)
+
+    def test_examples(self):
+        self.assertEqual(run_file("text.pmeh"), "HELLO WORLD\nLENGTH: 11\n")
+        self.assertEqual(run_file("overflow.pmeh"), "WORLD? LD\n")
+
+    def test_literal_is_backwards(self):
+        self.assertEqual(pmeh.parse_text_literal('[0null]"OLLEH"', 1), "HELLO\0")
+
+    def test_space_position_counts_forwards(self):
+        # real text "HI YOU": the space is at position 2
+        self.assertEqual(pmeh.parse_text_literal('[0null]"UOY"[2word]"IH"', 1), "HI YOU\0")
+        with self.assertRaises(pmeh.Punishment):
+            pmeh.parse_text_literal('[0null]"UOY"[3word]"IH"', 1)
+
+    def test_missing_terminator_reads_garbage(self):
+        src = prog(TEXT % ("2", "s", '"IH"'), PRINT % (2, "$s"))
+        # char[2] is 5 bytes (2 is upside down): "HI" + 3 garbage bytes "nan",
+        # then no terminator, so reading runs on into 3 more bytes "ban"
+        self.assertPunished(src, "'HInanban'", FakeRng("banana"))
+
+    # "HELLO" + "ABC" + terminator is 9 bytes in an 8-byte buffer: the terminator spills into $n
+    OVERFLOW = [TEXT % ("8", "s", '[0null]"OLLEH"'), VAR % ("n", "1"),
+                TEXT % ("8", "t", '[0null]"CBA"'), libc("strcat", "$s,$t")]
+
+    def test_overflow_corrupts_number_variable(self):
+        self.assertEqual(run(prog(*self.OVERFLOW, PRINT % (1, "$n"))), "\0\n")
+
+    def test_overflow_then_math_is_garbage(self):
+        self.assertPunished(prog(*self.OVERFLOW, ADD % ("$n,1", "n")), "garbage")
+
+    def test_overflow_while_declaring_smashes_stack(self):
+        self.assertPunished(prog(VAR % ("n", "1"), TEXT % ("5", "s", '[0null]"OLLEH"')),
+                            "stack smashing")
+
+    def test_stack_smashing(self):
+        src = prog(TEXT % ("2", "a", '[0null]"OLLEH"'))
+        self.assertPunished(src, "stack smashing")
+
+    def test_strlen_strcmp_atoi_itoa_charat(self):
+        src = prog(TEXT % ("8", "s", '[0null]"21"'), VAR % ("n", "0"),
+                   libc("atoi", "$s", "n"), PRINT % (2, "$n"),          # "12" -> 12, not flipped
+                   libc("strlen", "$s", "n"), PRINT % (1, "$n"),
+                   libc("charat", "$s,0", "n"), PRINT % (2, "$n"),     # '1' is code 49
+                   TEXT % ("8", "t", '[0null]"21"'), libc("strcmp", "$s,$t", "n"), PRINT % (1, "$n"),
+                   libc("itoa", "$n", "t"), PRINT % (1, "$t"))
+        self.assertEqual(run(src), "12\n2\n49\n0\n0\n")
+
+    def test_atoi_of_banana_is_zero(self):
+        src = prog(TEXT % ("8", "s", '[0null]"ANANAB"'), VAR % ("n", "1"),
+                   libc("atoi", "$s", "n"), PRINT % (1, "$n"))
+        self.assertEqual(run(src), "0\n")
+
+    def test_read_text(self):
+        src = prog(TEXT % ("8", "s", ""), READ % (5, "s"), PRINT % (3, "$s"))
+        self.assertEqual(run(src, "Bob\n"), "Bob\n")
+
+    def test_text_is_not_a_number(self):
+        src = prog(TEXT % ("8", "s", '[0null]"IH"'), VAR % ("n", "0"), ADD % ("$s,1", "n"))
+        self.assertPunished(src, "Use atoi")
+
+    def test_text_passed_by_reference(self):
+        shout = " ".join(f"{ord(c):08b}" for c in "shout")
+        src = prog(DEF % (shout, "rdi:$x,rsi:$y"), libc("strcat", "$x,$y"), RET % "0", END,
+                   TEXT % ("8", "a", '[0null]"IH"'), TEXT % ("8", "b", '[0null]"!"'), VAR % ("r", "0"),
+                   CALL % ("shout", shout, "$a,$b", "r"), PRINT % (3, "$a"))
+        self.assertEqual(run(src), "HI!\n")
+
+    def test_unknown_libc_function(self):
+        self.assertPunished(prog(TEXT % ("8", "s", ""), libc("printf", "$s")), "not in the C library")
 
 
 class CommandLine(unittest.TestCase):
