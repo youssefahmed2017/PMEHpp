@@ -1114,7 +1114,8 @@ def build_parser():
                "  pmeh -k examples/hello.pmeh       only check it, don't run it\n"
                "  pmeh -c LINE -c LINE              run lines typed in the command\n"
                "  pmeh -m 15 print                  how do I write 15? what is 'print' in binary?\n"
-               "  pmeh -g examples/hello.pmeh       readable errors, for cowards",
+               "  pmeh -g examples/hello.pmeh       readable errors, for cowards\n"
+               "  pmeh -o hello examples/hello.pmeh compile to a real program, then run ./hello",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     source = parser.add_mutually_exclusive_group()
@@ -1129,6 +1130,11 @@ def build_parser():
                              "happen while running, like a wrong print length, aren't found)")
     parser.add_argument("-g", "--i-give-up", action="store_true", dest="coward",
                         help="show plain, readable error messages")
+    parser.add_argument("-o", "--output", metavar="FILE",
+                        help="compile to a native Linux x86-64 program called FILE instead of running "
+                             "(needs 'as' and 'ld' from binutils)")
+    parser.add_argument("-S", "--assembly", action="store_true",
+                        help="with -o: write the generated assembly to FILE instead of a program")
     parser.add_argument("-s", "--seed", type=int, metavar="N",
                         help="make random numbers and list garbage the same every run")
     parser.add_argument("-V", "--version", action="version",
@@ -1165,6 +1171,21 @@ def main(argv=None):
             return 1
     else:
         parser.error("give me a program file, -c LINE or -m VALUE. I'm not a mind reader.")
+
+    if args.output:
+        import pmehc
+        try:
+            pmehc.build(source, args.output, coward=args.coward, assembly_only=args.assembly,
+                        seed=args.seed)
+        except Punishment as p:
+            report(p, source, args.coward)
+            return 1
+        except pmehc.CompileError as e:
+            print(f"pmeh: {e}", file=sys.stderr)
+            return 1
+        return 0
+    if args.assembly:
+        parser.error("-S only works together with -o FILE.")
 
     try:
         program = parse(source)

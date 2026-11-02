@@ -44,10 +44,31 @@ Examples:
 | `-k`, `--check` | check a program without running it (mistakes that only happen while running aren't found) |
 | `-m VALUE...`, `--mercy VALUE...` | how to write a number (`-m 15` gives `21`), or a word in binary (`-m print`) |
 | `-g`, `--i-give-up` | plain, readable error messages, for cowards |
+| `-o FILE`, `--output FILE` | compile to a real Linux program instead of running (see below) |
+| `-S`, `--assembly` | with `-o`: write the generated assembly instead of a program |
 | `-s N`, `--seed N` | make random numbers and list garbage the same on every run |
 | `-V`, `--version` | show the version |
 
 Error reports are scrambled on purpose (see SYNTAX.md section 14). Use `-g` for a plain one.
+
+## Compile to a real program
+
+PMEH can be compiled into a native Linux x86-64 program that runs without Python:
+
+    pmeh -o guess examples/guess.pmeh
+    ./guess
+
+The compiler turns PMEH into x86-64 assembly (the asm you wrote in each statement is used for
+real where it can be: the jumps, `idiv`, `getrandom`…), then builds it with `as` and `ld`
+(from binutils: `sudo pacman -S binutils` on Arch). Use `-S` to see the assembly.
+
+- **Every rule still applies** in the compiled program: forgetful variables, frozen variables
+  during calls, overflow checks, exact print lengths. Error reports are scrambled while compiling
+  and baked into the program (`-g` makes them plain).
+- **It's fast.** Counting to 200,000 takes 0.69 s in the interpreter and 0.002 s compiled.
+- **Not supported yet:** lists, text, files and C library functions. The compiler says so and
+  the interpreter still runs those programs.
+- Random numbers come from the real `getrandom`, so `-s` doesn't make them repeat in compiled programs.
 
 ## Tests
 

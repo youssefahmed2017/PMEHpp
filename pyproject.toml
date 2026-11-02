@@ -16,4 +16,4 @@ authors = [{ name = "Youssef Ahmed" }]
 pmeh = "pmeh:main"
 
 [tool.setuptools]
-py-modules = ["pmeh"]
+py-modules = ["pmeh", "pmehc"]
