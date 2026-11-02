@@ -8,7 +8,12 @@ The full rules are in [SYNTAX.md](SYNTAX.md).
 
     python pmeh.py examples/hello.pmeh
 
+**Demo:** a guess-the-number game. See [DEMO.md](DEMO.md) for how it works.
+
+    python pmeh.py examples/guess.pmeh
+
 Examples:
+- `examples/guess.pmeh`: the demo game
 - `examples/hello.pmeh`: prints HELLO WORLD
 - `examples/countdown.pmeh`: counts down from 5
 - `examples/three.pmeh`: makes the forbidden number 3

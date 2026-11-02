@@ -37,6 +37,14 @@ class Examples(unittest.TestCase):
     def test_three(self):
         self.assertEqual(run_file("three.pmeh"), "THREE = 3\n")
 
+    def test_guess_demo(self):
+        intro, prompt = "GUESS MY NUMBER!\n", "YOUR GUESS?\n"
+        self.assertEqual(run_file("guess.pmeh", "50\n80\n64\n"),
+                         intro + prompt + "TOO LOW\n" + prompt + "TOO HIGH\n" + prompt
+                         + "CORRECT!\nYOU WON! TRIES:\n3\n")
+        out = run_file("guess.pmeh", "1\n" * 11 + "64\n")
+        self.assertTrue(out.endswith("YOU WON! TRIES:\n12\n"))
+
     def test_big_or_small(self):
         self.assertEqual(run_file("big_or_small.pmeh"), "BIG\n")
 
