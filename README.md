@@ -4,6 +4,14 @@ A programming language that is harder than assembly, because you have to write t
 
 The full rules are in [SYNTAX.md](SYNTAX.md).
 
+## Install
+
+    pip install .
+
+This gives you the `pmeh` command, so you can run `pmeh program.pmeh` from anywhere.
+(On Arch Linux and other systems that block a plain `pip install`, use `pipx install .`
+or a virtual environment.) Without installing, `python pmeh.py program.pmeh` works too.
+
 ## Run a program
 
     python pmeh.py examples/hello.pmeh
@@ -43,3 +51,7 @@ Error reports are scrambled on purpose (see SYNTAX.md section 13). Use `-g` for 
 ## Tests
 
     python -m unittest discover tests
+
+## License
+
+GPL-3.0-or-later. See [LICENSE](LICENSE).
