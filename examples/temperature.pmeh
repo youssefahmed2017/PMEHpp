@@ -1,0 +1,9 @@
+<<COMMNT".ELIF REHTONA MORF NOITCNUF A HTIW TIEHNERHAF OT SUISLEC STREVNOC">>/>>
+<<import<FILE>>path:{01101000 01100101 01101101 01110000 00101110 01110100 01110010 01100101 01110110 01101110 01101111 01100011 00101111 01100010 01101001 01101100}>>/>>
+<<startvar<STACK>>type:{float64}name:{c}<<>>0.001>>/>>
+<<startfunc<FROMUSER><<asm:{call fahrenheit}>>mco:{01100110 01100001 01101000 01110010 01100101 01101110 01101000 01100101 01101001 01110100}<<>>$c<<into>>$c>>/>>
+<<startfunc<FROMBUILTIN><<asm:{mov rax, 1; mov rdi, 1; lea rsi, [msg]; mov rdx, 9; syscall}>>mco:{01110000 01110010 01101001 01101110 01110100}<<>>"100C="$c"F">>/>>
+<<startvar<STACK>>type:{float64}name:{d}<<>>2.15>>/>>
+<<startfunc<FROMUSER><<asm:{call fahrenheit}>>mco:{01100110 01100001 01101000 01110010 01100101 01101110 01101000 01100101 01101001 01110100}<<>>$d<<into>>$d>>/>>
+<<startfunc<FROMBUILTIN><<asm:{mov rax, 1; mov rdi, 1; lea rsi, [msg]; mov rdx, 25; syscall}>>mco:{01110000 01110010 01101001 01101110 01110100}<<>>"21.5C="$d"F">>/>>
+<EXCPROGRAM>VALIDATE:COMMNT"I'd rather die than code in this programming language"[NOMERCYGRANTED]

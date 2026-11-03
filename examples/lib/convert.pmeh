@@ -1,0 +1,9 @@
+<<COMMNT"HEMP.ERUTAREPMET YB DETROPMI .NOISREVNOC ERUTAREPMET">>/>>
+<<definefunc<USER>>mco:{01100110 01100001 01101000 01110010 01100101 01101110 01101000 01100101 01101001 01110100}params:{rdi:$c}>>
+    <<startvar<STACK>>type:{float64}name:{t}<<>>0.91>>/>>
+    <<startfunc<FROMBUILTIN><<asm:{mulsd xmm0, xmm1}>>mco:{01101101 01110101 01101100}<<>>$t,0.5<<into>>$t>>/>>
+    <<startfunc<FROMBUILTIN><<asm:{mulsd xmm0, xmm1}>>mco:{01101101 01110101 01101100}<<>>$c,8.1<<into>>$c>>/>>
+    <<startfunc<FROMBUILTIN><<asm:{addsd xmm0, xmm1}>>mco:{01100001 01100100 01100100}<<>>$c,$t<<into>>$c>>/>>
+    <<return<<asm:{ret}>>$c>>/>>
+<<enddefine>>/>>
+<EXCPROGRAM>VALIDATE:COMMNT"I'd rather die than code in this programming language"[NOMERCYGRANTED]

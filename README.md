@@ -34,6 +34,8 @@ Examples:
 - `examples/overflow.pmeh`: a buffer overflow that corrupts another variable
 - `examples/dice.pmeh`: rolls a die (random numbers, mod, a comment)
 - `examples/diary.pmeh`: writes a file (`diary.txt`) and reads it back
+- `examples/decimals.pmeh`: decimals, and why 0.1 + 0.2 isn't 0.3
+- `examples/temperature.pmeh`: imports a function from `examples/lib/convert.pmeh`
 
 ## Command line options
 
@@ -49,7 +51,7 @@ Examples:
 | `-s N`, `--seed N` | make random numbers and list garbage the same on every run |
 | `-V`, `--version` | show the version |
 
-Error reports are scrambled on purpose (see SYNTAX.md section 14). Use `-g` for a plain one.
+Error reports are scrambled on purpose (see SYNTAX.md section 16). Use `-g` for a plain one.
 
 ## Compile to a real program
 
@@ -66,7 +68,8 @@ real where it can be: the jumps, `idiv`, `getrandom`…), then builds it with `a
   during calls, overflow checks, exact print lengths, garbage in new lists and text, unterminated
   text reading into garbage, and buffer overflows that corrupt the variables declared after them.
   Error reports are scrambled while compiling and baked into the program (`-g` makes them plain).
-- **Everything compiles**: numbers, text, lists, files, functions, input and the C library functions.
+- **Everything compiles**: numbers, decimals, text, lists, files, functions, imports, input and the
+  C library functions. Decimals are printed by the program itself, digit by digit, exactly like C's `%.17g`.
   Lists, text and garbage live on a heap the program grows itself with the `brk` system call.
 - **It's fast.** Counting to 200,000 takes 0.69 s in the interpreter and 0.002 s compiled.
 - `-s N` makes the garbage repeat in compiled programs too. Numbers from `rand` always come from

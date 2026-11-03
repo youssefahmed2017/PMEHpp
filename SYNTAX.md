@@ -40,6 +40,7 @@ Every number is turned upside down: read the digits right to left, then flip eac
 | open | `mov rax, 2; lea rdi, [path]; mov rsi, FLAGS; mov rdx, MODE; syscall` | `01101111 01110000 01100101 01101110` |
 | close | `mov rax, 3; mov rdi, [fd]; syscall` | `01100011 01101100 01101111 01110011 01100101` |
 | mul | `imul rax, rbx` | `01101101 01110101 01101100` |
+| cvt | one of the conversion instructions in section 14 | `01100011 01110110 01110100` |
 | div | `cqo; idiv rbx` (rounds toward zero) | `01100100 01101001 01110110` |
 
 Math arguments: `$x,1`. The first goes in `rax`, the second in `rbx`.
@@ -273,7 +274,74 @@ The same `read` as for the keyboard, with `mov rdi, [fd]` and the file descripto
 Gives 0 if it worked, -9 if that file wasn't open. **Ending the program with a file still open is
 a punishment.**
 
-## 14. Error reports
+## 14. Decimals
+Two decimal types, with the real x86-64 floating-point instructions: `float64` (a C `double`)
+and `float32` (a C `float`, with less precision).
+
+```
+<<startvar<STACK>>type:{float64}name:{x}<<>>1.0>>/>>
+<<startfunc<FROMBUILTIN><<asm:{addsd xmm0, xmm1}>>mco:{01100001 01100100 01100100}<<>>$x,5.0<<into>>$x>>/>>
+```
+- **Decimals are upside down too.** The whole number is reversed and every digit flipped:
+  `1.0` means 0.1, `5.0` means 0.2, `25.1` means 1.25, `0.1` means 1.0. `pmeh -m 0.1` tells you.
+  A decimal always has a point and digits on both sides, so `0` is a whole number and `0.0` a decimal.
+- **The asm decides the kind of math.** `add` with `add rax, rbx` adds whole numbers;
+  `addsd xmm0, xmm1` adds float64 and `addss xmm0, xmm1` adds float32. Likewise `subsd`/`subss`,
+  `mulsd`/`mulss` and `divsd`/`divss`. There is no decimal `mod`, because there is no such instruction.
+- **No mixing.** Whole numbers, float64 and float32 never mix: not in math, not in comparisons, not
+  in variables. Written decimals fit either size. Lists hold whole numbers only.
+- **Dividing by zero is not punished**, because real hardware doesn't complain either:
+  `inf`, `-inf`, or `nan` for 0/0.
+- **Printing** always uses 17 significant digits, like C's `%.17g`: `0.1 + 0.2` prints
+  `0.30000000000000004`, `0.1` as a float32 prints `0.10000000149011612`, and `1.0` prints `1`.
+  The print `LENGTH` must still be exact.
+- Reading decimals from the keyboard isn't possible. Read a whole number and convert it.
+
+### Comparing decimals
+```
+<<startif<<asm:{ucomisd xmm0, xmm1; jae skip}>>$x,0.1>>
+```
+Decimals are compared with `ucomisd` (float64) or `ucomiss` (float32), and the real jumps that go
+with them: `ja`, `jae`, `jb`, `jbe`, `je`, `jne`. `jg`, `jl` and friends are a punishment.
+As always, the jump says when to **skip**, so `jae` here means "if x < 1.0".
+
+`nan` behaves like the real thing: a comparison with `nan` sets the "equal" and "below" flags at
+once, so `je`, `jb` and `jbe` are taken, and `jne`, `ja` and `jae` are not.
+
+### Converting
+```
+<<startfunc<FROMBUILTIN><<asm:{cvtsi2sd xmm0, rax}>>mco:{01100011 01110110 01110100}<<>>$n<<into>>$x>>/>>
+```
+
+| asm | from | to |
+|---|---|---|
+| `cvtsi2sd xmm0, rax` | whole number | float64 |
+| `cvtsi2ss xmm0, rax` | whole number | float32 |
+| `cvttsd2si rax, xmm0` | float64 | whole number (the decimals are chopped off) |
+| `cvttss2si rax, xmm0` | float32 | whole number |
+| `cvtss2sd xmm0, xmm0` | float32 | float64 |
+| `cvtsd2ss xmm0, xmm0` | float64 | float32 |
+
+A decimal that doesn't fit in a whole number (too big, `inf` or `nan`) becomes
+-9223372036854775808, the value real x86 gives ("integer indefinite").
+
+## 15. Imports
+```
+<<import<FILE>>path:{01101000 01100101 01101101 01110000 00101110 01110100 01110010 01100101 01110110 01101110 01101111 01100011 00101111 01100010 01101001 01101100}>>/>>
+```
+- The path is the file name **written backwards, then in binary**. That one is `hemp.trevnoc/bil`,
+  so it imports `lib/convert.pmeh`. The path is relative to the importing file.
+- Imports go at the very top of a file, before anything else except comments.
+- An imported file may only contain functions (and comments, and its own imports), and it must
+  end with its own validation line.
+- Importing the same file twice, or files importing each other in a circle, is a punishment.
+- **Line numbers count the glued program.** Each imported file is pasted where its import line
+  was, and punishments count lines of the whole glued result (from the bottom, as usual). Only
+  `-g` tells you which file and line that really is.
+
+See `examples/temperature.pmeh`, which imports `examples/lib/convert.pmeh`.
+
+## 16. Error reports
 Every error report contains everything you need. None of it is easy to read.
 
 - **Location:** the line number is counted **from the bottom** of the file (blank lines count),

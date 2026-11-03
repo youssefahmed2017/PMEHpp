@@ -6,14 +6,16 @@ Run `python pmeh.py -h` for the command line options. The full rules are in SYNT
 import argparse
 import codecs
 import os
+import math
 import random
 import re
+import struct
 import sys
 from dataclasses import dataclass, field
 
 # ---------------------------------------------------------------- constants
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 
 VALIDATION_LINE = ('<EXCPROGRAM>VALIDATE:COMMNT"I\'d rather die than code in '
                    'this programming language"[NOMERCYGRANTED]')
@@ -29,6 +31,26 @@ PARAM_REGISTERS = ["rdi", "rsi", "rdx", "rcx", "r8", "r9"]   # Linux x86-64 call
 FLIP = {"0": "0", "1": "1", "2": "5", "5": "2", "6": "9", "8": "8", "9": "6"}
 BANNED_DIGITS = "347"
 TYPES = {"int8": 8, "int16": 16, "int32": 32, "int64": 64}
+FLOATS = {"float32": 32, "float64": 64}
+FLOAT_MATH = {op: {64: f"{op}sd xmm0, xmm1", 32: f"{op}ss xmm0, xmm1"} for op in ("add", "sub", "mul", "div")}
+FCMP_ASM = re.compile(r"ucomis([sd]) xmm0, xmm1; (j[a-z]+) (\w+)")
+FJUMPS = {  # after ucomisd: taken when this is true (zf, cf are the real x86 flags; NaN sets both)
+    "ja": lambda zf, cf: not cf and not zf,
+    "jae": lambda zf, cf: not cf,
+    "jb": lambda zf, cf: cf,
+    "jbe": lambda zf, cf: cf or zf,
+    "je": lambda zf, cf: zf,
+    "jne": lambda zf, cf: not zf,
+}
+CVT = {  # the real conversion instructions: asm -> (from, to)
+    "cvtsi2sd xmm0, rax": ("int", "float64"),
+    "cvtsi2ss xmm0, rax": ("int", "float32"),
+    "cvttsd2si rax, xmm0": ("float64", "int"),
+    "cvttss2si rax, xmm0": ("float32", "int"),
+    "cvtss2sd xmm0, xmm0": ("float32", "float64"),
+    "cvtsd2ss xmm0, xmm0": ("float64", "float32"),
+}
+INDEFINITE = -2 ** 63            # what x86 gives when a decimal doesn't fit in a whole number
 
 PRINT_ASM = re.compile(r"mov rax, 1; mov rdi, 1; lea rsi, \[msg\]; mov rdx, (\d+); syscall")
 RAND_ASM = re.compile(r"mov rax, 318; lea rdi, \[buf\]; mov rsi, (\d+); mov rdx, 0; syscall")
@@ -48,7 +70,7 @@ MATH_ASM = {
 }
 STORE_ASM = "mov [rbx + rcx], rax"
 LOAD_ASM = "mov rax, [rbx + rcx]"
-BUILTINS = {"print", "read", "write", "open", "close", "rand", "store", "load", *MATH_ASM}
+BUILTINS = {"print", "read", "write", "open", "close", "rand", "store", "load", "cvt", *MATH_ASM}
 LIBC = {  # name: (number of arguments, gives a result back)
     "strlen": (1, True),
     "strcat": (2, False),
@@ -77,6 +99,7 @@ LIST_RE = re.compile(r"<<startlist<HEAP>>type:\{(?P<type>[^}]*)\}name:\{(?P<name
 IF_RE = re.compile(r"<<startif<<asm:\{(?P<asm>.*?)\}>>(?P<args>.*?)>>")
 LOOP_RE = re.compile(r"<<startloop<<asm:\{(?P<asm>.*?)\}>>(?P<args>.*?)>>")
 COMMENT_RE = re.compile(r'<<COMMNT"(?P<text>[^"]*)">>/>>')
+IMPORT_RE = re.compile(r"<<import<FILE>>path:\{(?P<bits>[^}]*)\}>>/>>")
 DEF_RE = re.compile(r"<<definefunc<USER>>mco:\{(?P<name>[^}]*)\}params:\{(?P<params>[^}]*)\}>>")
 RETURN_RE = re.compile(r"<<return<<asm:\{(?P<asm>.*?)\}>>(?P<value>.*?)>>/>>")
 CALL_RE = re.compile(r"<<startfunc<FROMUSER><<asm:\{(?P<asm>.*?)\}>>mco:\{(?P<name>[^}]*)\}"
@@ -118,6 +141,60 @@ class TextBuf:
 
 class CText(str):
     """Text produced by a function (itoa), with its terminator."""
+
+
+class F32(float):
+    """A float32 value (stored exactly as a Python float)."""
+
+
+def round32(x):
+    """Round a decimal to float32, like the real cvtsd2ss: nearest, ties to even, too big -> inf."""
+    if math.isnan(x) or math.isinf(x):
+        return F32(x)
+    try:
+        return F32(struct.unpack("f", struct.pack("f", x))[0])
+    except OverflowError:
+        return F32(math.copysign(math.inf, x))
+
+
+def int_to_f32(n):
+    """cvtsi2ss: round a whole number straight to float32 (not via float64)."""
+    size = abs(n).bit_length()
+    if size <= 24:
+        return F32(float(n))
+    shift = size - 24
+    q, r = divmod(abs(n), 1 << shift)
+    half = 1 << (shift - 1)
+    if r > half or (r == half and q & 1):
+        q += 1
+    return F32(math.copysign(float(q << shift), n))
+
+
+def truncate(x):
+    """cvttsd2si: chop off the decimals. NaN, inf or too big gives the "integer indefinite" value."""
+    if math.isnan(x) or math.isinf(x):
+        return INDEFINITE
+    n = math.trunc(x)
+    return n if -2 ** 63 <= n < 2 ** 63 else INDEFINITE
+
+
+def float_op(op, a, b):
+    if op == "add":
+        return a + b
+    if op == "sub":
+        return a - b
+    if op == "mul":
+        return a * b
+    if b == 0:                                       # no punishment: the hardware doesn't care either
+        if a == 0 or math.isnan(a):
+            return math.nan
+        return math.copysign(math.inf, a) * math.copysign(1.0, b)
+    return a / b
+
+
+def show_decimal(x):
+    """How decimals are printed: always 17 significant digits, like C's %.17g."""
+    return "%.17g" % x
 
 
 class Punishment(Exception):
@@ -164,8 +241,21 @@ def decode_binary(bits, lineno):
     return "".join(chr(int(c, 2)) for c in chunks)
 
 
+def flip_decimal(written, lineno=0):
+    """A written decimal turned upside down: the whole thing reversed, every digit flipped."""
+    negative = written.startswith("-")
+    body = written[1:] if negative else written
+    for d in body:
+        if d in BANNED_DIGITS:
+            raise Punishment(lineno, f"the digit {d} is banned. It doesn't survive being turned upside down.")
+    value = float("".join(FLIP.get(c, c) for c in reversed(body)))
+    return -value if negative else value
+
+
 def parse_value(token, lineno):
     token = token.strip()
+    if re.fullmatch(r"-?\d+\.\d+", token):
+        return ("num", flip_decimal(token, lineno))
     if re.fullmatch(r"-?\d+", token):
         return ("num", flip_number(token, lineno))
     if re.fullmatch(r"\$" + NAME, token):
@@ -185,6 +275,74 @@ def parse_values(args, lineno, what, count, example):
     if len(parts) != count:
         raise Punishment(lineno, f"{what} needs exactly {count} values, like {example}.")
     return [parse_value(p, lineno) for p in parts]
+
+
+# ---------------------------------------------------------------- imports
+
+def glue(source, filename="-c", folder="."):
+    """Paste every imported file where its import line was, and return the glued program
+    plus where each glued line came from: [(file, line)]. Line numbers in punishments count
+    lines of the glued program."""
+    out, origins, seen = [], [], set()
+
+    def here():
+        return len(out) + 1
+
+    def expand(text, name, folder, chain, is_main):
+        lines = text.splitlines()
+        last = max((i for i, line in enumerate(lines) if line.strip()), default=None)
+        if not is_main and (last is None or lines[last].strip() != VALIDATION_LINE):
+            raise Punishment(here(), f"the imported file {name} must end with the validation line too. "
+                             "Everyone suffers.")
+        started = inside = False
+        for n, line in enumerate(lines, start=1):
+            text_ = line.strip()
+            m = IMPORT_RE.fullmatch(text_)
+            if m:
+                if started:
+                    raise Punishment(here(), "imports go at the very top of a file, before anything else.")
+                file_name = decode_binary(m["bits"], here())[::-1]     # binary of the name, backwards
+                path = os.path.join(folder, file_name)
+                key = os.path.realpath(path)
+                if key in chain:
+                    raise Punishment(here(), f"{file_name} imports itself, through a circle of imports. "
+                                     "Suffering can't be infinite.")
+                if key in seen:
+                    raise Punishment(here(), f"{file_name} was already imported. Once is enough.")
+                try:
+                    with open(path, encoding="utf-8") as f:
+                        content = f.read()
+                except OSError as e:
+                    raise Punishment(here(), f"can't import {file_name}: {e.strerror}.")
+                seen.add(key)
+                expand(content, file_name, os.path.dirname(path), chain | {key}, False)
+                continue
+            if not is_main and n - 1 == last:
+                continue                              # an imported file's validation line
+            if text_ and not COMMENT_RE.fullmatch(text_):
+                started = True
+                if not is_main:
+                    if DEF_RE.fullmatch(text_):
+                        inside = True
+                    elif text_ == "<<enddefine>>/>>":
+                        inside = False
+                    elif not inside:
+                        raise Punishment(here(), f"imported files may only contain functions, but {name} "
+                                         f"has this on its line {n}: {text_}")
+            out.append(line)
+            origins.append((name, n))
+
+    main_path = os.path.realpath(filename) if os.path.isfile(filename) else None
+    expand(source, filename, folder, {main_path} if main_path else set(), True)
+    return "\n".join(out) + "\n", origins
+
+
+def where(lineno, origins):
+    """Where a glued line really is, for plain error messages: " (file, line N)"."""
+    if origins and len({name for name, _ in origins}) > 1 and 1 <= lineno <= len(origins):
+        name, n = origins[lineno - 1]
+        return f" ({name}, line {n})"
+    return ""
 
 
 # ---------------------------------------------------------------- parser
@@ -248,8 +406,9 @@ def parse_line(lineno, text):
     if m and re.fullmatch(r"char\[.*\]", m["type"]):
         return parse_text_var(lineno, m)
     if m:
-        if m["type"] not in TYPES:
-            raise Punishment(lineno, f"'{m['type']}' is not a type. Pick one: {', '.join(TYPES)}.")
+        if m["type"] not in TYPES and m["type"] not in FLOATS:
+            raise Punishment(lineno, f"'{m['type']}' is not a type. Pick one: "
+                             f"{', '.join([*TYPES, *FLOATS])}, or char[N].")
         if not re.fullmatch(NAME, m["name"]):
             raise Punishment(lineno, f"'{m['name']}' is not a valid variable name.")
         return Stmt(lineno, "var", {"type": m["type"], "name": m["name"],
@@ -268,14 +427,26 @@ def parse_line(lineno, text):
         m = regex.fullmatch(text)
         if m:
             asm = CMP_ASM.fullmatch(normalize_asm(m["asm"]))
-            if not asm:
-                raise Punishment(lineno, f"the {kind} asm must look like: cmp rax, rbx; <jump> {label}")
-            jump, target = asm.groups()
-            if jump not in JUMPS:
-                raise Punishment(lineno, f"'{jump}' is not a jump I know. Try: {', '.join(JUMPS)}.")
+            fasm = FCMP_ASM.fullmatch(normalize_asm(m["asm"]))
+            if asm:
+                jump, target = asm.groups()
+                bits = None
+                if jump not in JUMPS:
+                    raise Punishment(lineno, f"'{jump}' is not a jump I know. Try: {', '.join(JUMPS)}.")
+            elif fasm:
+                size, jump, target = fasm.groups()
+                bits = 64 if size == "d" else 32
+                if jump in JUMPS and jump not in FJUMPS:
+                    raise Punishment(lineno, f"after ucomis{size}, {jump} doesn't work. Decimals use the "
+                                     f"other jumps: {', '.join(FJUMPS)}.")
+                if jump not in FJUMPS:
+                    raise Punishment(lineno, f"'{jump}' is not a jump I know. Try: {', '.join(FJUMPS)}.")
+            else:
+                raise Punishment(lineno, f"the {kind} asm must look like: cmp rax, rbx; <jump> {label}\n"
+                                 f"or, for decimals: ucomisd xmm0, xmm1; <jump> {label}")
             if target != label:
                 raise Punishment(lineno, f"{kind} blocks must jump to '{label}', not '{target}'.")
-            return Stmt(lineno, kind, {"jump": jump,
+            return Stmt(lineno, kind, {"jump": jump, "float": bits,
                                        "values": parse_two_values(m["args"], lineno, kind)})
 
     m = FUNC_RE.fullmatch(text)
@@ -380,8 +551,24 @@ def parse_func(lineno, m):
         return Stmt(lineno, "load", {"values": parse_values(m["args"], lineno, "load", 2, "$xs,8"),
                                      "into": m["into"]})
 
+    if name == "cvt":
+        if asm not in CVT:
+            raise Punishment(lineno, "cvt needs one of the real conversion instructions:\n  "
+                             + "\n  ".join(CVT))
+        if not m["into"]:
+            raise Punishment(lineno, "you converted a number and threw it away. Add <<into>>$variable.")
+        return Stmt(lineno, "cvt", {"asm": asm, "into": m["into"],
+                                    "value": parse_values(m["args"], lineno, "cvt", 1, "$x")[0]})
+
+    if name in FLOAT_MATH and asm in FLOAT_MATH[name].values():
+        if not m["into"]:
+            raise Punishment(lineno, f"{name} makes a result and you threw it away. Add <<into>>$variable.")
+        return Stmt(lineno, "fmath", {"op": name, "bits": 64 if asm == FLOAT_MATH[name][64] else 32,
+                                      "into": m["into"],
+                                      "values": parse_two_values(m["args"], lineno, name)})
     if asm != MATH_ASM[name]:
-        raise Punishment(lineno, f"wrong asm for {name}. It must be: {MATH_ASM[name]}")
+        others = f" (or, for decimals: {FLOAT_MATH[name][64]} / {FLOAT_MATH[name][32]})" if name in FLOAT_MATH else ""
+        raise Punishment(lineno, f"wrong asm for {name}. It must be: {MATH_ASM[name]}{others}")
     if not m["into"]:
         raise Punishment(lineno, f"{name} makes a result and you threw it away. Add <<into>>$variable.")
     return Stmt(lineno, "math", {"op": name, "into": m["into"],
@@ -615,6 +802,32 @@ class Machine:
         if isinstance(value, Garbage):
             raise Punishment(lineno, f"you tried to use {str(value)!r} as a number. That's garbage "
                              "from memory you never stored anything in.")
+        if isinstance(value, float):
+            raise Punishment(lineno, f"{show_decimal(value)} is a decimal. Only whole numbers work here. "
+                             "Convert it with cvttsd2si.")
+        return value
+
+    def decimal(self, v, lineno, bits):
+        """A value for a decimal instruction: float64 for sd, float32 for ss."""
+        value = self.value(v, lineno)
+        if isinstance(value, PMEHList):
+            raise Punishment(lineno, f"${v[1]} is a list, not a decimal. Load an item out of it first.")
+        if isinstance(value, TextBuf):
+            raise Punishment(lineno, f"${v[1]} is text, not a decimal.")
+        if isinstance(value, Garbage):
+            raise Punishment(lineno, f"you tried to use {str(value)!r} as a decimal. That's garbage "
+                             "from memory you never stored anything in.")
+        if not isinstance(value, float):
+            raise Punishment(lineno, f"{value} is a whole number, and decimal instructions need decimals. "
+                             f"Write it like 1.0, or convert it with cvtsi2s{'d' if bits == 64 else 's'}.")
+        if v[0] == "num":                             # a written decimal fits whatever it's used with
+            return round32(value) if bits == 32 else value
+        if bits == 32 and not isinstance(value, F32):
+            raise Punishment(lineno, f"${v[1]} is a float64, and ...ss instructions need float32. "
+                             "Convert it with cvtsd2ss.")
+        if bits == 64 and isinstance(value, F32):
+            raise Punishment(lineno, f"${v[1]} is a float32, and ...sd instructions need float64. "
+                             "Convert it with cvtss2sd.")
         return value
 
     def assign(self, name, value, lineno):
@@ -680,7 +893,7 @@ class Machine:
                         break
                     lst.items[i] = Garbage("".join(chunk))
             else:
-                size = TYPES[entry[1]] // 8
+                size = {**TYPES, **FLOATS}[entry[1]] // 8
                 chunk, chars = chars[:size], chars[size:]
                 entry[0] = Garbage("".join(chunk))
             if not chars:
@@ -713,6 +926,18 @@ class Machine:
     def check_range(self, value, type_, lineno):
         if isinstance(value, Garbage):
             return                                    # garbage fits anywhere, sadly
+        if type_ in FLOATS:
+            if not isinstance(value, float):
+                raise Punishment(lineno, f"{type_} holds decimals. {value} is a whole number. "
+                                 f"Convert it with cvtsi2s{'d' if type_ == 'float64' else 's'}.")
+            if (type_ == "float32") != isinstance(value, F32):
+                other = "float64" if type_ == "float32" else "float32"
+                how = "cvtsd2ss" if type_ == "float32" else "cvtss2sd"
+                raise Punishment(lineno, f"{type_} can't hold a {other} value. Convert it with {how}.")
+            return
+        if isinstance(value, float):
+            raise Punishment(lineno, f"{type_} holds whole numbers. {show_decimal(value)} is a decimal. "
+                             "Convert it with cvttsd2si.")
         bits = TYPES[type_]
         low, high = -(2 ** (bits - 1)), 2 ** (bits - 1) - 1
         if not low <= value <= high:
@@ -747,6 +972,8 @@ class Machine:
                     raise Punishment(s.lineno, "a list can't be copied into a variable.")
                 if isinstance(value, TextBuf):
                     raise Punishment(s.lineno, f"{d['type']} holds numbers. Text doesn't go in it. Use atoi.")
+                if d["type"] == "float32" and d["value"][0] == "num" and isinstance(value, float):
+                    value = round32(value)            # a written decimal fits whatever it's put in
                 self.check_range(value, d["type"], s.lineno)
                 self.vars[d["name"]] = [value, d["type"], self.step]
                 self.forgotten.discard(d["name"])
@@ -841,9 +1068,30 @@ class Machine:
                 a, b = (self.number(v, s.lineno) for v in d["values"])
                 self.assign(d["into"], self.math(d["op"], a, b, s.lineno), s.lineno)
 
+            elif s.kind == "fmath":
+                a, b = (self.decimal(v, s.lineno, d["bits"]) for v in d["values"])
+                result = float_op(d["op"], a, b)
+                self.assign(d["into"], round32(result) if d["bits"] == 32 else result, s.lineno)
+
+            elif s.kind == "cvt":
+                source, target = CVT[d["asm"]]
+                if source == "int":
+                    x = self.number(d["value"], s.lineno)
+                    result = float(x) if target == "float64" else int_to_f32(x)
+                else:
+                    x = self.decimal(d["value"], s.lineno, FLOATS[source])
+                    result = {"int": truncate, "float64": float, "float32": round32}[target](x)
+                self.assign(d["into"], result, s.lineno)
+
             elif s.kind in ("if", "loop"):
-                a, b = (self.number(v, s.lineno) for v in d["values"])
-                if JUMPS[d["jump"]](a, b):            # jump taken -> skip the block
+                if d["float"]:
+                    a, b = (self.decimal(v, s.lineno, d["float"]) for v in d["values"])
+                    unordered = math.isnan(a) or math.isnan(b)
+                    taken = FJUMPS[d["jump"]](unordered or a == b, unordered or a < b)
+                else:
+                    a, b = (self.number(v, s.lineno) for v in d["values"])
+                    taken = JUMPS[d["jump"]](a, b)
+                if taken:                             # jump taken -> skip the block
                     if s.kind == "loop":
                         pc = d["end"] + 1
                     elif d["else"] is not None:
@@ -886,6 +1134,8 @@ class Machine:
                 new_vars[name] = [value, "list", self.step]
             elif isinstance(value, TextBuf):          # so is text (it's a char* in C)
                 new_vars[name] = [value, "char", self.step]
+            elif isinstance(value, float):            # decimals keep their own type
+                new_vars[name] = [value, "float32" if isinstance(value, F32) else "float64", self.step]
             else:
                 self.check_range(value, "int64", s.lineno)
                 new_vars[name] = [value, "int64", self.step]
@@ -1030,7 +1280,12 @@ class Machine:
                 value = self.touch(x, s.lineno)[0]
                 if isinstance(value, PMEHList):
                     raise Punishment(s.lineno, f"${x} is a list. Print its items one at a time.")
-                text += self.c_string(value) if isinstance(value, TextBuf) else str(value)
+                if isinstance(value, TextBuf):
+                    text += self.c_string(value)
+                elif isinstance(value, float):
+                    text += show_decimal(value)
+                else:
+                    text += str(value)
         if s.data["length"] != len(text):
             raise Punishment(s.lineno, f"mov rdx, {s.data['length']} but the text {text!r} "
                              f"is {len(text)} characters long.")
@@ -1096,6 +1351,11 @@ def punishment_report(p, source, rng=random):
 # ---------------------------------------------------------------- command line
 
 def mercy(arg):
+    if re.fullmatch(r"-?\d+\.\d+", arg):
+        if any(d in BANNED_DIGITS for d in arg):
+            return f"{arg} can't be written directly (it has a 3, 4 or 7). Build it with math."
+        written = ("-" if arg.startswith("-") else "") + "".join(FLIP.get(c, c) for c in reversed(arg.lstrip("-")))
+        return f"To get {arg}, write {written}"
     if re.fullmatch(r"-?\d+", arg):
         if any(d in BANNED_DIGITS for d in arg.lstrip("-")):
             return f"{arg} can't be written directly (it has a 3, 4 or 7). Build it with math."
@@ -1142,9 +1402,9 @@ def build_parser():
     return parser
 
 
-def report(p, source, coward):
+def report(p, source, coward, origins=None):
     if coward:
-        print(f"\nPUNISHMENT on line {p.lineno}: {p.message}", file=sys.stderr)
+        print(f"\nPUNISHMENT on line {p.lineno}{where(p.lineno, origins)}: {p.message}", file=sys.stderr)
         print("Coward.", file=sys.stderr)
     else:
         print(punishment_report(p, source), file=sys.stderr)
@@ -1172,13 +1432,20 @@ def main(argv=None):
     else:
         parser.error("give me a program file, -c LINE or -m VALUE. I'm not a mind reader.")
 
+    folder = os.path.dirname(os.path.abspath(args.file)) if args.file else os.getcwd()
+    try:
+        source, origins = glue(source, args.file or "-c", folder)
+    except Punishment as p:
+        report(p, source, args.coward)
+        return 1
+
     if args.output:
         import pmehc
         try:
             pmehc.build(source, args.output, coward=args.coward, assembly_only=args.assembly,
-                        seed=args.seed)
+                        seed=args.seed, origins=origins)
         except Punishment as p:
-            report(p, source, args.coward)
+            report(p, source, args.coward, origins)
             return 1
         except pmehc.CompileError as e:
             print(f"pmeh: {e}", file=sys.stderr)
@@ -1196,7 +1463,7 @@ def main(argv=None):
         Machine(program, sys.stdout, rng=rng).run()
     except Punishment as p:
         sys.stdout.flush()
-        report(p, source, args.coward)
+        report(p, source, args.coward, origins)
         return 1
     sys.stdout.flush()
     return 0

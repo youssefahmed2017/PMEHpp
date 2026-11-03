@@ -1,0 +1,15 @@
+<<COMMNT".MEES YEHT TAHW TON ERA SLAMICED">>/>>
+<<startvar<STACK>>type:{float64}name:{a}<<>>1.0>>/>>
+<<startvar<STACK>>type:{float64}name:{b}<<>>5.0>>/>>
+<<startfunc<FROMBUILTIN><<asm:{addsd xmm0, xmm1}>>mco:{01100001 01100100 01100100}<<>>$a,$b<<into>>$a>>/>>
+<<startfunc<FROMBUILTIN><<asm:{mov rax, 1; mov rdi, 1; lea rsi, [msg]; mov rdx, 27; syscall}>>mco:{01110000 01110010 01101001 01101110 01110100}<<>>"0.1+0.2="$a>>/>>
+<<startvar<STACK>>type:{float32}name:{f}<<>>1.0>>/>>
+<<startfunc<FROMBUILTIN><<asm:{mov rax, 1; mov rdi, 1; lea rsi, [msg]; mov rdx, 24; syscall}>>mco:{01110000 01110010 01101001 01101110 01110100}<<>>"0.1F="$f>>/>>
+<<startfunc<FROMBUILTIN><<asm:{divsd xmm0, xmm1}>>mco:{01100100 01101001 01110110}<<>>$a,0.0<<into>>$a>>/>>
+<<startfunc<FROMBUILTIN><<asm:{mov rax, 1; mov rdi, 1; lea rsi, [msg]; mov rdx, 9; syscall}>>mco:{01110000 01110010 01101001 01101110 01110100}<<>>"0.3/0="$a>>/>>
+<<startvar<STACK>>type:{float64}name:{x}<<>>0.0>>/>>
+<<startloop<<asm:{ucomisd xmm0, xmm1; jae end}>>$x,0.1>>
+    <<startfunc<FROMBUILTIN><<asm:{addsd xmm0, xmm1}>>mco:{01100001 01100100 01100100}<<>>$x,1.0<<into>>$x>>/>>
+<<endloop>>/>>
+<<startfunc<FROMBUILTIN><<asm:{mov rax, 1; mov rdi, 1; lea rsi, [msg]; mov rdx, 38; syscall}>>mco:{01110000 01110010 01101001 01101110 01110100}<<>>"ADDING"[6word]"0.1"[10word]"UNTIL"[16word]"1:"[19word]$x>>/>>
+<EXCPROGRAM>VALIDATE:COMMNT"I'd rather die than code in this programming language"[NOMERCYGRANTED]

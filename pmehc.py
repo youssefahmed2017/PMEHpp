@@ -13,31 +13,42 @@ How values are stored
 ---------------------
 Every variable has a 48-byte slot in its function's stack frame:
 
-    value   the number, or a pointer (garbage, list or text)
+    value   the number, the 64 bits of a decimal, or a pointer (garbage, list or text)
     last    the step it was last used (for forgetting)
     state   0 = never existed, 1 = alive
-    type    8/16/32/64 for numbers, LIST or CHAR
-    tag     what the value is: INT, GARBAGE, LIST or TEXT
+    type    8/16/32/64 for numbers, LIST, CHAR, F64T or F32T
+    tag     what the value is: INT, GARBAGE, LIST, TEXT, FLOAT64 or FLOAT32
     order   when it was declared in this frame (buffer overflows spill in this order)
+
+Decimals are kept as float64 bits; a float32 value is a float64 that float32 can hold exactly,
+and ...ss instructions convert to float32 and back around the real instruction.
 
 Lists, text buffers and garbage live on a heap that grows with the brk system call.
 While compiled code works with a value, the value is in rax and its tag in r14.
 """
 import os
 import random
+import struct
 import shutil
 import subprocess
 import tempfile
 
 import pmeh
-from pmeh import (GARBAGE_JUNK, MAX_DEPTH, MAX_LIST_BYTES, MAX_STEPS, MEMORY_SPAN, O_APPEND, O_CREAT,
-                  O_TRUNC, PARAM_REGISTERS, TYPES, Punishment)
+from pmeh import (CVT, FLOAT_MATH, FLOATS, GARBAGE_JUNK, MAX_DEPTH, MAX_LIST_BYTES, MAX_STEPS, MEMORY_SPAN,
+                  O_APPEND, O_CREAT, O_TRUNC, PARAM_REGISTERS, TYPES, Punishment, round32, where)
 
 SLOT, HEADER = 48, 16          # bytes per variable; frame header holds the next declaration number
 VALUE, LAST, STATE, BITS, TAG, ORDER = 0, 8, 16, 24, 32, 40
 ALIVE = 1
-LIST, CHAR = 1, 2              # variable types besides 8/16/32/64
-INT, GARBAGE, LISTREF, TEXTREF = 0, 1, 2, 3
+LIST, CHAR, F64T, F32T = 1, 2, 3, 4   # variable types besides 8/16/32/64
+INT, GARBAGE, LISTREF, TEXTREF, FLOAT64, FLOAT32 = 0, 1, 2, 3, 4, 5   # what a value is
+FLOAT_TYPE = {"float64": F64T, "float32": F32T}
+FLOAT_TAG = {64: FLOAT64, 32: FLOAT32}
+
+
+def bits_of(x):
+    """The 64 bits of a decimal, as a signed number for `mov rax, ...`."""
+    return struct.unpack("<q", struct.pack("<d", x))[0]
 OPEN_FILES = 1024
 
 
@@ -541,6 +552,277 @@ bytes_cmp:
 5:  mov eax, 1
     ret
 
+# big_mul: multiply the big number in `big` (32-bit pieces, smallest first) by edi (< 2^31).
+big_mul:
+    xor ecx, ecx
+    xor r8, r8
+    lea rsi, [rip + big]
+1:  cmp rcx, qword ptr [rip + biglen]
+    jge 2f
+    mov eax, dword ptr [rsi + rcx*4]
+    imul rax, rdi
+    add rax, r8
+    mov dword ptr [rsi + rcx*4], eax
+    shr rax, 32
+    mov r8, rax
+    inc rcx
+    jmp 1b
+2:  test r8, r8
+    jz 3f
+    mov dword ptr [rsi + rcx*4], r8d
+    inc qword ptr [rip + biglen]
+3:  ret
+
+# big_div: divide the big number by rdi (< 2^32). The remainder in rax.
+big_div:
+    mov rcx, qword ptr [rip + biglen]
+    xor edx, edx
+    lea rsi, [rip + big]
+1:  test rcx, rcx
+    jz 3f
+    dec rcx
+    mov eax, dword ptr [rsi + rcx*4]
+    mov r8, rdx
+    shl r8, 32
+    or rax, r8
+    xor edx, edx
+    div rdi
+    mov dword ptr [rsi + rcx*4], eax
+    jmp 1b
+3:  mov rcx, qword ptr [rip + biglen]
+    test rcx, rcx
+    jz 4f
+    cmp dword ptr [rsi + rcx*4 - 4], 0
+    jne 4f
+    dec qword ptr [rip + biglen]
+    jmp 3b
+4:  mov rax, rdx
+    ret
+
+# append_float: add the decimal whose 64 bits are in rax to the output, exactly like C's %.17g:
+# 17 significant digits, correctly rounded (ties to even), trailing zeros removed.
+# The value is m * 2^e. It is turned into a whole number N (m * 2^e, or m * 5^-e with -e decimal
+# places), all of N's decimal digits are worked out with big-number arithmetic, then rounded.
+append_float:
+    push rbx
+    push r12
+    push r13
+    push r14
+    push r15
+    mov r12, rax
+    mov r13, rax
+    shr r13, 52
+    and r13, 0x7FF                      # exponent
+    mov r14, 0x000FFFFFFFFFFFFF
+    and r14, rax                        # mantissa
+    cmp r13, 0x7FF
+    jne 10f
+    test r14, r14
+    jnz 2f
+    test r12, r12
+    jns 1f
+    mov al, '-'
+    call append_char
+1:  lea rsi, [rip + inf_text]
+    mov rcx, 3
+    call append
+    jmp 99f
+2:  lea rsi, [rip + nan_text]
+    mov rcx, 3
+    call append
+    jmp 99f
+10: test r12, r12
+    jns 11f
+    mov al, '-'
+    call append_char
+11: test r13, r13
+    jnz 12f
+    test r14, r14
+    jnz 13f
+    mov al, '0'
+    call append_char
+    jmp 99f
+12: bts r14, 52
+    sub r13, 1075
+    jmp 14f
+13: mov r13, -1074
+14: lea rsi, [rip + big]
+    mov dword ptr [rsi], r14d
+    mov rax, r14
+    shr rax, 32
+    mov dword ptr [rsi + 4], eax
+    mov qword ptr [rip + biglen], 2
+    test eax, eax
+    jnz 15f
+    mov qword ptr [rip + biglen], 1
+15: xor ebx, ebx                        # decimal places
+    test r13, r13
+    js 17f
+16: test r13, r13                       # N = m * 2^e, 30 bits at a time
+    jz 20f
+    mov rcx, r13
+    cmp rcx, 30
+    jbe 161f
+    mov rcx, 30
+161: sub r13, rcx
+    mov edi, 1
+    shl rdi, cl
+    call big_mul
+    jmp 16b
+17: neg r13                             # N = m * 5^k, with k decimal places
+    mov rbx, r13
+171: test r13, r13
+    jz 20f
+    mov rcx, r13
+    cmp rcx, 13
+    jbe 172f
+    mov rcx, 13
+172: sub r13, rcx
+    mov edi, 1
+173: imul rdi, rdi, 5
+    dec rcx
+    jnz 173b
+    call big_mul
+    jmp 171b
+20: lea r15, [rip + digits + 1024]      # the digits of N, written backwards, 9 at a time
+21: mov rdi, 1000000000
+    call big_div
+    cmp qword ptr [rip + biglen], 0
+    je 23f
+    mov rcx, 9
+    mov r8, 10
+22: xor edx, edx
+    div r8
+    add dl, '0'
+    dec r15
+    mov byte ptr [r15], dl
+    dec rcx
+    jnz 22b
+    jmp 21b
+23: mov r8, 10
+231: xor edx, edx
+    div r8
+    add dl, '0'
+    dec r15
+    mov byte ptr [r15], dl
+    test rax, rax
+    jnz 231b
+    lea rax, [rip + digits + 1024]
+    sub rax, r15                        # how many digits
+    mov r13, rax
+    sub r13, rbx
+    dec r13                             # the power of ten of the first digit
+    mov rbx, rax
+    cmp rbx, 17
+    jle 40f
+    movzx eax, byte ptr [r15 + 17]      # round to 17 digits
+    cmp al, '5'
+    ja 32f
+    jb 39f
+    mov rcx, 18
+31: cmp rcx, rbx
+    jge 311f
+    cmp byte ptr [r15 + rcx], '0'
+    jne 32f
+    inc rcx
+    jmp 31b
+311: movzx eax, byte ptr [r15 + 16]     # exactly half: round to even
+    test al, 1
+    jz 39f
+32: mov rcx, 16
+33: cmp byte ptr [r15 + rcx], '9'
+    jne 34f
+    mov byte ptr [r15 + rcx], '0'
+    dec rcx
+    jns 33b
+    mov byte ptr [r15], '1'             # 9999... became 10000...
+    inc r13
+    jmp 39f
+34: inc byte ptr [r15 + rcx]
+39: mov rbx, 17
+40: cmp rbx, 1                          # no trailing zeros
+    jle 41f
+    cmp byte ptr [r15 + rbx - 1], '0'
+    jne 41f
+    dec rbx
+    jmp 40b
+41: cmp r13, -4
+    jl 50f
+    cmp r13, 17
+    jge 50f
+    test r13, r13
+    js 45f
+    lea rcx, [r13 + 1]                  # plain: digits, maybe zeros, maybe "." and more digits
+    cmp rcx, rbx
+    jbe 42f
+    mov rcx, rbx
+42: mov rsi, r15
+    call append
+    lea rax, [r13 + 1]
+    sub rax, rbx
+    jle 44f
+    mov r12, rax
+43: mov al, '0'
+    call append_char
+    dec r12
+    jnz 43b
+44: lea rcx, [r13 + 1]
+    cmp rbx, rcx
+    jle 99f
+    mov al, '.'
+    call append_char
+    lea rsi, [r15 + r13 + 1]
+    mov rcx, rbx
+    sub rcx, r13
+    dec rcx
+    call append
+    jmp 99f
+45: mov al, '0'                         # 0.000ddd
+    call append_char
+    mov al, '.'
+    call append_char
+    mov r12, r13
+    neg r12
+    dec r12
+    jz 47f
+46: mov al, '0'
+    call append_char
+    dec r12
+    jnz 46b
+47: mov rsi, r15
+    mov rcx, rbx
+    call append
+    jmp 99f
+50: movzx eax, byte ptr [r15]           # d.ddde+XX
+    call append_char
+    cmp rbx, 1
+    jle 51f
+    mov al, '.'
+    call append_char
+    lea rsi, [r15 + 1]
+    lea rcx, [rbx - 1]
+    call append
+51: mov al, 'e'
+    call append_char
+    mov al, '+'
+    test r13, r13
+    jns 52f
+    mov al, '-'
+    neg r13
+52: call append_char
+    cmp r13, 10
+    jge 53f
+    mov al, '0'
+    call append_char
+53: mov rax, r13
+    call append_int
+99: pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop rbx
+    ret
+
 # write_text: write rcx bytes from rsi into the text variable whose slot is at rdi.
 # r8 = that frame's rbp, r9 = how many slots it has. Bytes that don't fit spill into the
 # variables declared after it, in order. rax = 0, or 1 if it spilled past every variable.
@@ -587,7 +869,13 @@ write_text:
     je 51f
     cmp rax, 1
     je 52f
-    shr rax, 3                          # a number variable: becomes garbage
+    cmp rax, 3                          # float64 and float32 variables are 8 and 4 bytes
+    jne 58f
+    mov rax, 64
+58: cmp rax, 4
+    jne 59f
+    mov rax, 32
+59: shr rax, 3                          # a number variable: becomes garbage
     mov rcx, r14
     cmp rcx, rax
     jbe 53f
@@ -657,7 +945,8 @@ write_text:
 # ---------------------------------------------------------------- compiler
 
 class Compiler:
-    def __init__(self, program, source, coward=False, rng=None, seed=None):
+    def __init__(self, program, source, coward=False, rng=None, seed=None, origins=None):
+        self.origins = origins
         self.program = program
         self.source = source
         self.coward = coward
@@ -755,7 +1044,10 @@ class Compiler:
 
     def value(self, scope, v, lineno):
         kind, x = v
-        if kind == "num":
+        if kind == "num" and isinstance(x, float):
+            self.emit(f"mov rax, {bits_of(x)}")
+            self.emit(f"mov r14d, {FLOAT64}")
+        elif kind == "num":
             self.emit(f"mov rax, {x}")
             self.emit("xor r14d, r14d")
         else:
@@ -764,12 +1056,18 @@ class Compiler:
             self.emit(f"mov r14, {self.slot(scope, x, TAG)}")
 
     def number(self, scope, v, lineno):
-        """A value that must be a real number (not garbage, a list or text)."""
+        """A value that must be a real whole number (not garbage, a list, text or a decimal)."""
+        decimal_message = "that is a decimal. Only whole numbers work here. Convert it with cvttsd2si."
+        if v[0] == "num" and isinstance(v[1], float):
+            self.emit(f"jmp {self.error(lineno, decimal_message)}")
+            return
         self.value(scope, v, lineno)
         if v[0] != "var":
             return
         name = v[1]
         ok = self.new_label()
+        self.emit(f"cmp r14, {FLOAT64}")
+        self.emit(f"jae {self.error(lineno, decimal_message)}")
         self.emit(f"cmp r14, {INT}")
         self.emit(f"je {ok}")
         self.emit(f"cmp r14, {GARBAGE}")
@@ -778,6 +1076,76 @@ class Compiler:
         self.emit(f"je {self.error(lineno, f'${name} is a list, not a number. Load an item out of it first.')}")
         self.emit(f"jmp {self.error(lineno, f'${name} is text, not a number. Use atoi.')}")
         self.emit(f"{ok}:")
+
+    def decimal(self, scope, v, lineno, bits):
+        """A value for a decimal instruction (sd: float64, ss: float32). Its bits in rax."""
+        whole = (f"that is a whole number, and decimal instructions need decimals. Write it like 1.0, "
+                 f"or convert it with cvtsi2s{'d' if bits == 64 else 's'}.")
+        if v[0] == "num":
+            if not isinstance(v[1], float):
+                self.emit(f"jmp {self.error(lineno, whole)}")
+                return
+            x = round32(v[1]) if bits == 32 else v[1]        # a written decimal fits whatever it's used with
+            self.emit(f"mov rax, {bits_of(x)}")
+            self.emit(f"mov r14d, {FLOAT_TAG[bits]}")
+            return
+        name = v[1]
+        self.value(scope, v, lineno)
+        ok = self.new_label()
+        self.emit(f"cmp r14, {FLOAT_TAG[bits]}")
+        self.emit(f"je {ok}")
+        self.emit(f"cmp r14, {INT}")
+        self.emit(f"je {self.error(lineno, whole)}")
+        self.emit(f"cmp r14, {GARBAGE}")
+        self.emit(f"je {self.error(lineno, 'you tried to use garbage as a decimal. That is garbage from memory you never stored anything in.')}")
+        self.emit(f"cmp r14, {LISTREF}")
+        self.emit(f"je {self.error(lineno, f'${name} is a list, not a decimal. Load an item out of it first.')}")
+        self.emit(f"cmp r14, {TEXTREF}")
+        self.emit(f"je {self.error(lineno, f'${name} is text, not a decimal.')}")
+        if bits == 32:
+            message = f"${name} is a float64, and ...ss instructions need float32. Convert it with cvtsd2ss."
+        else:
+            message = f"${name} is a float32, and ...sd instructions need float64. Convert it with cvtss2sd."
+        self.emit(f"jmp {self.error(lineno, message)}")
+        self.emit(f"{ok}:")
+
+    def two_decimals(self, scope, values, lineno, bits):
+        """First decimal in rax, second in rbx."""
+        self.decimal(scope, values[0], lineno, bits)
+        self.emit("push rax")
+        self.decimal(scope, values[1], lineno, bits)
+        self.emit("mov rbx, rax")
+        self.emit("pop rax")
+
+    def check_kind(self, type_operand, lineno, what, store):
+        """The rules for putting the value in rax (tag r14) into a number or decimal variable whose
+        type is in `type_operand`: decimals into decimals of the same size, whole numbers into whole
+        numbers (checked for overflow), garbage into anything. Jumps to `store` when it's fine."""
+        not64, not32, whole = self.new_label(), self.new_label(), self.new_label()
+        self.emit(f"cmp r14, {GARBAGE}")
+        self.emit(f"je {store}")                       # garbage fits anywhere, sadly
+        self.emit(f"cmp {type_operand}, {F64T}")
+        self.emit(f"jne {not64}")
+        self.emit(f"cmp r14, {FLOAT64}")
+        self.emit(f"je {store}")
+        self.emit(f"cmp r14, {INT}")
+        self.emit(f"je {self.error(lineno, f'{what} holds decimals, not whole numbers. Convert it with cvtsi2sd.')}")
+        self.emit(f"jmp {self.error(lineno, f'{what} is a float64 and can not hold a float32 value. Convert it with cvtss2sd.')}")
+        self.emit(f"{not64}:")
+        self.emit(f"cmp {type_operand}, {F32T}")
+        self.emit(f"jne {not32}")
+        self.emit(f"cmp r14, {FLOAT32}")
+        self.emit(f"je {store}")
+        self.emit(f"cmp r14, {INT}")
+        self.emit(f"je {self.error(lineno, f'{what} holds decimals, not whole numbers. Convert it with cvtsi2ss.')}")
+        self.emit(f"jmp {self.error(lineno, f'{what} is a float32 and can not hold a float64 value. Convert it with cvtsd2ss.')}")
+        self.emit(f"{not32}:")
+        self.emit(f"cmp r14, {INT}")
+        self.emit(f"je {whole}")
+        self.emit(f"jmp {self.error(lineno, f'{what} holds whole numbers, and that is a decimal. Convert it with cvttsd2si.')}")
+        self.emit(f"{whole}:")
+        self.check_bits(type_operand, lineno, what)
+        self.emit(f"jmp {store}")
 
     def two_numbers(self, scope, values, lineno):
         """First number in rax, second in rbx (evaluated in that order)."""
@@ -861,9 +1229,7 @@ class Compiler:
         self.emit(f"{number}:")
         self.emit(f"cmp r14, {TEXTREF}")
         self.emit(f"je {self.error(lineno, f'${name} holds numbers. Text does not go in it. Use atoi.')}")
-        self.emit(f"cmp r14, {INT}")
-        self.emit(f"jne {store}")                       # garbage fits anywhere, sadly
-        self.check_bits(self.slot(scope, name, BITS), lineno, f"${name}")
+        self.check_kind(self.slot(scope, name, BITS), lineno, f"${name}", store)
         self.emit(f"{store}:")
         self.emit(f"mov {self.slot(scope, name, VALUE)}, rax")
         self.emit(f"mov {self.slot(scope, name, TAG)}, r14")
@@ -901,21 +1267,26 @@ class Compiler:
         # endif and comment: nothing, but the line still counts
 
     def do_var(self, scope, s, d, line):
-        name, bits = d["name"], TYPES[d["type"]]
-        self.value(scope, d["value"], line)
+        name, type_ = d["name"], d["type"]
+        code = FLOAT_TYPE.get(type_) or TYPES[type_]
+        kind, x = d["value"]
+        if kind == "num" and type_ == "float32" and isinstance(x, float):
+            self.emit(f"mov rax, {bits_of(round32(x))}")        # a written decimal fits what it's put in
+            self.emit(f"mov r14d, {FLOAT32}")
+        else:
+            self.value(scope, d["value"], line)
         store = self.new_label()
-        if d["value"][0] == "var":
+        if kind == "var":
             self.emit(f"cmp r14, {LISTREF}")
             self.emit(f"je {self.error(line, 'a list can not be copied into a variable.')}")
             self.emit(f"cmp r14, {TEXTREF}")
-            self.emit(f"je {self.error(line, d['type'] + ' holds numbers. Text does not go in it. Use atoi.')}")
-            self.emit(f"cmp r14, {INT}")
-            self.emit(f"jne {store}")
-        self.check_bits(bits, line, d["type"])
+            self.emit(f"je {self.error(line, type_ + ' holds numbers. Text does not go in it. Use atoi.')}")
+        self.emit("mov rbx, " + str(code))
+        self.check_kind("rbx", line, type_, store)
         self.emit(f"{store}:")
         self.emit(f"mov {self.slot(scope, name, VALUE)}, rax")
         self.emit(f"mov {self.slot(scope, name, TAG)}, r14")
-        self.emit(f"mov {self.slot(scope, name, BITS)}, {bits}")
+        self.emit(f"mov {self.slot(scope, name, BITS)}, {code}")
         self.create(scope, name)
 
     def do_list(self, scope, s, d, line):
@@ -993,6 +1364,8 @@ class Compiler:
         self.emit(f"je {self.error(line, message)}")
         store = self.new_label()
         self.emit("mov rbx, qword ptr [rsp + 8]")
+        self.emit(f"cmp r14, {FLOAT64}")
+        self.emit(f"jae {self.error(line, 'lists hold whole numbers, and that is a decimal. Convert it with cvttsd2si.')}")
         self.emit(f"cmp r14, {INT}")
         self.emit(f"jne {store}")
         self.check_bits("qword ptr [rbx]", line, "the list's items")
@@ -1266,9 +1639,55 @@ class Compiler:
             self.emit(f"{done}:")
         self.assign_number(scope, d["into"], line)
 
+    def do_fmath(self, scope, s, d, line):
+        bits, op = d["bits"], d["op"]
+        self.two_decimals(scope, d["values"], line, bits)
+        self.emit("movq xmm0, rax")
+        self.emit("movq xmm1, rbx")
+        if bits == 32:
+            self.emit("cvtsd2ss xmm0, xmm0")
+            self.emit("cvtsd2ss xmm1, xmm1")
+        self.emit(FLOAT_MATH[op][bits])                  # the asm you wrote: addsd, mulss...
+        if bits == 32:
+            self.emit("cvtss2sd xmm0, xmm0")
+        self.emit("movq rax, xmm0")
+        self.emit(f"mov r14d, {FLOAT_TAG[bits]}")
+        self.assign(scope, d["into"], line)
+
+    def do_cvt(self, scope, s, d, line):
+        source, target = CVT[d["asm"]]
+        if source == "int":
+            self.number(scope, d["value"], line)
+        else:
+            self.decimal(scope, d["value"], line, FLOATS[source])
+            self.emit("movq xmm0, rax")
+            if source == "float32":
+                self.emit("cvtsd2ss xmm0, xmm0")         # exact: the value is a float32 already
+        self.emit(d["asm"])                              # the asm you wrote: cvtsi2sd, cvttsd2si...
+        if target == "int":
+            self.emit("xor r14d, r14d")
+        else:
+            if target == "float32":
+                self.emit("cvtss2sd xmm0, xmm0")
+            self.emit("movq rax, xmm0")
+            self.emit(f"mov r14d, {FLOAT_TAG[FLOATS[target]]}")
+        self.assign(scope, d["into"], line)
+
     def do_if(self, scope, s, d, line):
-        self.two_numbers(scope, d["values"], line)
-        self.emit("cmp rax, rbx")
+        if d["float"]:
+            bits = d["float"]
+            self.two_decimals(scope, d["values"], line, bits)
+            self.emit("movq xmm0, rax")
+            self.emit("movq xmm1, rbx")
+            if bits == 32:
+                self.emit("cvtsd2ss xmm0, xmm0")
+                self.emit("cvtsd2ss xmm1, xmm1")
+                self.emit("ucomiss xmm0, xmm1")
+            else:
+                self.emit("ucomisd xmm0, xmm1")
+        else:
+            self.two_numbers(scope, d["values"], line)
+            self.emit("cmp rax, rbx")
         if s.kind == "loop":
             target = d["end"] + 1
         elif d["else"] is not None:
@@ -1354,7 +1773,13 @@ class Compiler:
                 self.emit(f"je {text}")
                 self.emit(f"cmp r14, {GARBAGE}")
                 self.emit(f"je {junk}")
+                decimal = self.new_label()
+                self.emit(f"cmp r14, {FLOAT64}")
+                self.emit(f"jae {decimal}")
                 self.emit("call append_int")
+                self.emit(f"jmp {done}")
+                self.emit(f"{decimal}:")
+                self.emit("call append_float")
                 self.emit(f"jmp {done}")
                 self.emit(f"{text}:")
                 self.emit("mov rdi, rax")
@@ -1407,6 +1832,15 @@ class Compiler:
             self.emit(f"jne {done}")
             self.emit(f"mov {self.slot(index, name, BITS)}, {CHAR}")
             self.emit(f"{done}:")
+            not64, not32 = self.new_label(), self.new_label()
+            self.emit(f"cmp rax, {FLOAT64}")
+            self.emit(f"jne {not64}")
+            self.emit(f"mov {self.slot(index, name, BITS)}, {F64T}")
+            self.emit(f"{not64}:")
+            self.emit(f"cmp rax, {FLOAT32}")
+            self.emit(f"jne {not32}")
+            self.emit(f"mov {self.slot(index, name, BITS)}, {F32T}")
+            self.emit(f"{not32}:")
             self.emit(f"mov {self.slot(index, name, STATE)}, {ALIVE}")
             self.emit(f"mov {self.slot(index, name, ORDER)}, {i}")
             self.emit("mov rax, qword ptr [rip + step]")
@@ -1476,7 +1910,7 @@ class Compiler:
         # every error report, scrambled at compile time
         for (lineno, message), label in self.errors.items():
             if self.coward:
-                report = f"\nPUNISHMENT on line {lineno}: {message}\nCoward.\n"
+                report = f"\nPUNISHMENT on line {lineno}{where(lineno, self.origins)}: {message}\nCoward.\n"
             else:
                 report = pmeh.punishment_report(Punishment(lineno, message), self.source, self.rng) + "\n"
             data = report.encode()
@@ -1488,6 +1922,8 @@ class Compiler:
         self.emit(".section .rodata")
         for text, label in self.strings.items():
             self.strings_bytes(label, text.encode())
+        self.strings_bytes("inf_text", b"inf")
+        self.strings_bytes("nan_text", b"nan")
         self.out.append(".balign 8")
         self.out.append("junk_table:")
         for i, junk in enumerate(GARBAGE_JUNK):
@@ -1498,7 +1934,8 @@ class Compiler:
         for name, size in (("step", 8), ("depth", 8), ("outlen", 8), ("outcap", 8), ("outptr", 8),
                            ("pend_start", 8), ("pend_len", 8), ("heap_cur", 8), ("heap_end", 8),
                            ("rng_state", 8), ("argtags", 64), ("numbuf", 32), ("randbuf", 16),
-                           ("open_files", OPEN_FILES), ("pend", 65536), ("chunk", 65536)):
+                           ("open_files", OPEN_FILES), ("pend", 65536), ("chunk", 65536),
+                           ("biglen", 8), ("big", 512), ("digits", 1024)):
             self.emit(f"{name}: .zero {size}")
         return "\n".join(self.out) + "\n"
 
@@ -1508,15 +1945,16 @@ class Compiler:
             self.out.append("    .byte " + ", ".join(str(b) for b in data[i:i + 32]))
 
 
-def compile_to_asm(source, coward=False, seed=None):
+def compile_to_asm(source, coward=False, seed=None, origins=None):
     program = pmeh.parse(source)
     rng = random.Random(seed) if seed is not None else None
-    return Compiler(program, source, coward, rng, seed).compile()
+    return Compiler(program, source, coward, rng, seed, origins).compile()
 
 
-def build(source, output, coward=False, assembly_only=False, seed=None):
-    """Compile PMEH source to an executable (or to an assembly file)."""
-    asm = compile_to_asm(source, coward, seed)
+def build(source, output, coward=False, assembly_only=False, seed=None, origins=None):
+    """Compile PMEH source (already glued together with its imports) to an executable,
+    or to an assembly file."""
+    asm = compile_to_asm(source, coward, seed, origins)
     if assembly_only:
         with open(output, "w") as f:
             f.write(asm)

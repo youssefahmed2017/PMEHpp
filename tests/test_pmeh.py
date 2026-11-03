@@ -505,6 +505,175 @@ class Files(unittest.TestCase):
         self.assertPunished(prog(PRINT % (3, '"A"[0line]"B"')), "position 1")
 
 
+FVAR = "<<startvar<STACK>>type:{%s}name:{%s}<<>>%s>>/>>"
+
+
+def fop(op, args, into, suffix="sd"):
+    return bincall(op, f"{op}{suffix} xmm0, xmm1", args, into)
+
+
+def cvt(asm, arg, into):
+    return bincall("cvt", asm, arg, into)
+
+
+def fif(jump, args, suffix="d"):
+    return "<<startif<<asm:{ucomis%s xmm0, xmm1; %s skip}>>%s>>" % (suffix, jump, args)
+
+
+class Decimals(unittest.TestCase):
+    def assertPunished(self, source, fragment):
+        with self.assertRaises(pmeh.Punishment) as ctx:
+            run(source)
+        self.assertIn(fragment, ctx.exception.message)
+
+    def test_written_upside_down(self):
+        for written, value in [("1.0", 0.1), ("25.1", 1.25), ("-5.0", -0.2), ("0.001", 100.0), ("2.5", 2.5)]:
+            self.assertEqual(pmeh.flip_decimal(written), value, written)
+        with self.assertRaises(pmeh.Punishment):
+            pmeh.flip_decimal("1.3")
+
+    def test_example(self):
+        self.assertEqual(run_file("decimals.pmeh"), "0.1+0.2=0.30000000000000004\n0.1F=0.10000000149011612\n"
+                                                    "0.3/0=inf\nADDING 0.1 UNTIL 1: 1.0999999999999999\n")
+
+    def test_printing_like_c(self):
+        for x in (1.0, 1e20, 1e16, 1e17, 1e-5, -0.0, 5e-324, 0.1):
+            self.assertEqual(pmeh.show_decimal(x), "%.17g" % x)
+        self.assertEqual(pmeh.show_decimal(1.0), "1")
+
+    def test_float32_math(self):
+        src = prog(FVAR % ("float32", "a", "1.0"), FVAR % ("float32", "b", "5.0"),
+                   fop("add", "$a,$b", "a", "ss"), PRINT % (19, "$a"))
+        self.assertEqual(run(src), "0.30000001192092896\n")
+
+    def test_division_by_zero_is_not_punished(self):
+        for a, b, expected in (("0.1", "0.0", "inf"), ("-0.1", "0.0", "-inf"), ("0.0", "0.0", "nan"),
+                               ("0.1", "-0.0", "-inf")):
+            src = prog(FVAR % ("float64", "x", a), fop("div", f"$x,{b}", "x"), PRINT % (len(expected), "$x"))
+            self.assertEqual(run(src), expected + "\n", (a, b))
+
+    def test_nan_comparisons_like_x86(self):
+        # NaN sets ZF and CF, so je, jb and jbe are taken (the block is skipped), the rest are not
+        for jump, skipped in (("je", True), ("jne", False), ("jb", True), ("jbe", True),
+                              ("ja", False), ("jae", False)):
+            src = prog(FVAR % ("float64", "x", "0.0"), fop("div", "$x,0.0", "x"), fif(jump, "$x,$x"),
+                       PRINT % (3, '"RAN"'), "<<endif>>/>>")
+            self.assertEqual(run(src), "" if skipped else "RAN\n", jump)
+
+    def test_conversions(self):
+        cases = [
+            ("cvtsi2sd xmm0, rax", "int64", "6", "float64", "9"),
+            ("cvttsd2si rax, xmm0", "float64", "6.5", "int64", "2"),          # 6.5 is 2.9 upside down
+            ("cvttsd2si rax, xmm0", "float64", "-6.5", "int64", "-2"),
+            ("cvttsd2si rax, xmm0", "float64", "1.0e20", None, None),
+            ("cvtsd2ss xmm0, xmm0", "float64", "1.0", "float32", "0.10000000149011612"),
+            ("cvtss2sd xmm0, xmm0", "float32", "1.0", "float64", "0.10000000149011612"),
+            ("cvttss2si rax, xmm0", "float32", "2.5", "int64", "2"),
+        ]
+        for asm, from_type, value, to_type, expected in cases:
+            if to_type is None:
+                continue
+            src = prog(FVAR % (from_type, "x", value), FVAR % (to_type, "y", "0.0" if "float" in to_type else "0"),
+                       cvt(asm, "$x", "y"), PRINT % (len(expected), "$y"))
+            self.assertEqual(run(src), expected + "\n", asm)
+
+    def test_nan_to_whole_number_is_indefinite(self):
+        src = prog(FVAR % ("float64", "x", "0.0"), fop("div", "$x,0.0", "x"), VAR % ("n", "0"),
+                   cvt("cvttsd2si rax, xmm0", "$x", "n"), PRINT % (20, "$n"))
+        self.assertEqual(run(src), "-9223372036854775808\n")
+
+    def test_int_to_float32_rounds_once(self):
+        self.assertEqual(pmeh.int_to_f32(2 ** 53 + 2 ** 29 + 1), 2 ** 53 + 2 ** 30)
+        self.assertNotEqual(pmeh.round32(float(2 ** 53 + 2 ** 29 + 1)), 2 ** 53 + 2 ** 30)
+
+    def test_mistakes(self):
+        for src, fragment in (
+            (prog(FVAR % ("float64", "x", "0")), "holds decimals"),
+            (prog(VAR % ("x", "1.0")), "holds whole numbers"),
+            (prog(FVAR % ("float64", "x", "1.0"), FVAR % ("float32", "y", "$x")), "can't hold a float64"),
+            (prog(FVAR % ("float64", "x", "1.0"), fop("add", "$x,1", "x")), "whole number"),
+            (prog(FVAR % ("float32", "x", "1.0"), fop("add", "$x,$x", "x")), "need float64"),
+            (prog(FVAR % ("float64", "x", "1.0"), VAR % ("n", "0"), ADD % ("$x,1", "n")), "is a decimal"),
+            (prog(LIST % ("int64", "8"), STORE % "$xs,0,1.0"), "holds whole numbers"),
+            (prog(FVAR % ("float64", "x", "1.0"), "<<startif<<asm:{ucomisd xmm0, xmm1; jg skip}>>$x,$x>>",
+                  "<<endif>>/>>"), "doesn't work"),
+        ):
+            with self.subTest(fragment):
+                self.assertPunished(src, fragment)
+
+    def test_decimal_parameters(self):
+        dbl = " ".join(f"{ord(c):08b}" for c in "dbl")
+        src = prog(DEF % (dbl, "rdi:$a"), fop("add", "$a,$a", "a"), RET % "$a", END,
+                   FVAR % ("float64", "x", "1.0"), CALL % ("dbl", dbl, "$x", "x"), PRINT % (19, "$x"))
+        self.assertEqual(run(src), "0.20000000000000001\n")            # 0.1 + 0.1, all 17 digits
+
+
+class Imports(unittest.TestCase):
+    def setUp(self):
+        import tempfile
+        self.tmp = tempfile.TemporaryDirectory()
+        self.dir = pathlib.Path(self.tmp.name)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    @staticmethod
+    def import_line(name):
+        return "<<import<FILE>>path:{%s}>>/>>" % " ".join(f"{ord(c):08b}" for c in name[::-1])
+
+    def write(self, name, *lines):
+        path = self.dir / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("\n".join([*lines, V]) + "\n")
+        return path
+
+    def run_main(self, *lines):
+        path = self.write("main.pmeh", *lines)
+        source, origins = pmeh.glue(path.read_text(), str(path), str(self.dir))
+        return run(source), origins
+
+    def lib(self, name="lib/sq.pmeh", body=None):
+        return self.write(name, *square_def(body=body))
+
+    def test_import(self):
+        self.lib()
+        out, _ = self.run_main(self.import_line("lib/sq.pmeh"), VAR % ("x", "5"),
+                               CALL % ("square", SQ, "$x", "x"), PRINT % (1, "$x"))
+        self.assertEqual(out, "4\n")
+
+    def test_temperature_example(self):
+        path = ROOT / "examples" / "temperature.pmeh"
+        source, _ = pmeh.glue(path.read_text(), str(path), str(path.parent))
+        self.assertEqual(run(source), "100C=212F\n21.5C=70.700000000000003F\n")
+
+    def test_error_line_counts_glued_files(self):
+        self.lib(body=[MUL % ("$a,$a", "a")])                       # no return
+        with self.assertRaises(pmeh.Punishment) as ctx:
+            self.run_main(self.import_line("lib/sq.pmeh"), VAR % ("x", "5"), CALL % ("square", SQ, "$x", "x"))
+        path = self.dir / "main.pmeh"
+        _, origins = pmeh.glue(path.read_text(), str(path), str(self.dir))
+        self.assertEqual(ctx.exception.lineno, 3)                   # the enddefine, 3rd glued line
+        self.assertEqual(pmeh.where(3, origins), " (lib/sq.pmeh, line 3)")
+
+    def test_mistakes(self):
+        self.lib()
+        self.write("other.pmeh", VAR % ("x", "1"))
+        self.write("loop.pmeh", self.import_line("main.pmeh"))
+        (self.dir / "novalidation.pmeh").write_text(square_def()[0] + "\n")
+        for lines, fragment in (
+            ([self.import_line("lib/sq.pmeh"), self.import_line("lib/sq.pmeh")], "already imported"),
+            ([self.import_line("nope.pmeh")], "can't import"),
+            ([self.import_line("other.pmeh")], "may only contain functions"),
+            ([self.import_line("loop.pmeh")], "circle"),
+            ([self.import_line("novalidation.pmeh")], "validation line too"),
+            ([VAR % ("x", "1"), self.import_line("lib/sq.pmeh")], "very top"),
+        ):
+            with self.subTest(fragment):
+                with self.assertRaises(pmeh.Punishment) as ctx:
+                    self.run_main(*lines)
+                self.assertIn(fragment, ctx.exception.message)
+
+
 class CommandLine(unittest.TestCase):
     def cli(self, *argv):
         import contextlib

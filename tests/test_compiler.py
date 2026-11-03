@@ -17,9 +17,9 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tests"))
 import pmeh  # noqa: E402
-from test_pmeh import (ADD, CALL, CLOSE, COMMENT, DEF, END, FREAD, LIST, LOAD, MOD, MUL, OPEN,  # noqa: E402
-                       PATH, PRINT, RAND, READ, RET, SQ, STORE, TEXT, VAR, WRITE, libc, prog,
-                       square_def)
+from test_pmeh import (ADD, CALL, CLOSE, COMMENT, DEF, END, FREAD, FVAR, LIST, LOAD, MOD, MUL,  # noqa: E402
+                       OPEN, PATH, PRINT, RAND, READ, RET, SQ, STORE, TEXT, VAR, WRITE, cvt, fif, fop,
+                       libc, prog, square_def)
 
 CAN_COMPILE = (sys.platform.startswith("linux") and platform.machine() in ("x86_64", "AMD64")
                and shutil.which("as") and shutil.which("ld"))
@@ -60,12 +60,13 @@ class CompilerMatchesInterpreter(unittest.TestCase):
     def contents(folder):
         return {p.name: p.read_text() for p in sorted(folder.iterdir())}
 
-    def both(self, source, typed="", files=None, same_output=True):
+    def both(self, source, typed="", files=None, same_output=True, path=None):
         files = files or {}
-        path = os.path.join(self.tmp.name, "program.pmeh")
         exe = os.path.join(self.tmp.name, "program")
-        with open(path, "w") as f:
-            f.write(source)
+        if path is None:
+            path = os.path.join(self.tmp.name, "program.pmeh")
+            with open(path, "w") as f:
+                f.write(source)
         folder = self.workdir("interpreter", files)
         interp = subprocess.run([sys.executable, str(ROOT / "pmeh.py"), "-g", path],
                                 input=typed, capture_output=True, text=True, cwd=folder)
@@ -84,13 +85,13 @@ class CompilerMatchesInterpreter(unittest.TestCase):
         return native
 
     def example(self, name, typed=""):
-        return self.both((ROOT / "examples" / f"{name}.pmeh").read_text(), typed)
+        return self.both(None, typed, path=str(ROOT / "examples" / f"{name}.pmeh"))
 
     # ---- examples
 
     def test_examples(self):
         for name in ("hello", "countdown", "three", "big_or_small", "square", "factorial",
-                     "sum_list", "text", "overflow", "diary"):
+                     "sum_list", "text", "overflow", "diary", "decimals", "temperature"):
             with self.subTest(name):
                 self.example(name)
 
@@ -316,6 +317,126 @@ class CompilerMatchesInterpreter(unittest.TestCase):
         ):
             with self.subTest(src.splitlines()[-2]):
                 self.both(src, files=files)
+
+    # ---- decimals
+
+    def test_decimal_math_and_printing(self):
+        for a, b, op, suffix in (("1.0", "5.0", "add", "sd"), ("1.0", "5.0", "add", "ss"),
+                                 ("0.1", "0.0", "div", "sd"), ("0.0", "0.0", "div", "sd"),
+                                 ("-0.1", "0.0", "div", "ss"), ("0.1", "-0.0", "div", "sd"),
+                                 ("8.6", "1.0", "mul", "sd"), ("1.0", "1.0", "sub", "sd"),
+                                 ("5.1", "1.0", "sub", "ss"), ("1.0", "0.0", "mul", "sd")):
+            kind, bits = ("float64", 64) if suffix == "sd" else ("float32", 32)
+            x, y = (pmeh.flip_decimal(v) for v in (a, b))
+            if bits == 32:
+                x, y = pmeh.round32(x), pmeh.round32(y)
+            result = pmeh.float_op(op, x, y)
+            text = pmeh.show_decimal(pmeh.round32(result) if bits == 32 else result)
+            src = prog(FVAR % (kind, "x", a), fop(op, f"$x,{b}", "x", suffix), PRINT % (len(text), "$x"))
+            with self.subTest(a=a, b=b, op=op, suffix=suffix):
+                self.assertEqual(self.both(src).stdout, text + "\n")
+
+    def test_printing_thousands_of_decimals_like_c(self):
+        """The compiled program works out decimal digits itself, with big-number arithmetic in asm.
+        Feed it 3,000 decimals across every exponent and compare each line with %.17g."""
+        import math
+        import random
+        import struct
+        import pmehc
+        rng = random.Random(5)
+        values = [0.1, 1.0, 1e16, 1e17, 1e20, 1e-4, 1e-5, 5e-324, 1.7976931348623157e308, -0.0, 0.0,
+                  2.2250738585072014e-308, 99999999999999999.0, 1 / 3, math.inf, -math.inf, math.nan]
+        while len(values) < 2000:
+            x = struct.unpack("<d", struct.pack("<Q", rng.getrandbits(64)))[0]
+            if not math.isnan(x):
+                values.append(x)
+        values += [rng.uniform(-1000, 1000) * 10 ** rng.randint(-8, 8) for _ in range(1000)]
+        program = pmeh.parse(prog(FVAR % ("float64", "x", "0.0")))
+        asm = pmehc.Compiler(program, "", coward=True).compile()
+        printing = []
+        for x in values:
+            printing += ["mov qword ptr [rip + outlen], 0", f"mov rax, {pmehc.bits_of(x)}", "call append_float",
+                         "mov al, 10", "call append_char", "mov rax, 1", "mov rdi, 1",
+                         "mov rsi, qword ptr [rip + outptr]", "mov rdx, qword ptr [rip + outlen]", "syscall"]
+        asm = asm.replace("\nL1:\n", "\n" + "\n".join("    " + line for line in printing) + "\nL1:\n", 1)
+        base = os.path.join(self.tmp.name, "decimals")
+        pathlib.Path(base + ".s").write_text(asm)
+        subprocess.run(["as", "--64", "-o", base + ".o", base + ".s"], check=True)
+        subprocess.run(["ld", "-o", base, base + ".o"], check=True)
+        lines = subprocess.run([base], capture_output=True, text=True).stdout.splitlines()
+        self.assertEqual(lines, ["%.17g" % x for x in values])
+
+    def test_nan_jumps(self):
+        for jump in ("je", "jne", "jb", "jbe", "ja", "jae"):
+            for a, b in (("$x,$x", "0.0"), ("0.1,0.5", None), ("0.5,0.1", None), ("0.1,0.1", None)):
+                with self.subTest(jump=jump, a=a):
+                    self.both(prog(FVAR % ("float64", "x", "0.0"), fop("div", "$x,0.0", "x"),
+                                   fif(jump, a), PRINT % (3, '"RAN"'), "<<endif>>/>>", PRINT % (1, '"."')))
+
+    def test_conversions(self):
+        for src in (
+            prog(VAR % ("n", "6"), FVAR % ("float64", "y", "0.0"), cvt("cvtsi2sd xmm0, rax", "$n", "y"),
+                 PRINT % (1, "$y")),
+            prog(FVAR % ("float64", "x", "6.5"), VAR % ("n", "0"), cvt("cvttsd2si rax, xmm0", "$x", "n"),
+                 PRINT % (1, "$n")),
+            prog(FVAR % ("float64", "x", "-6.5"), VAR % ("n", "0"), cvt("cvttsd2si rax, xmm0", "$x", "n"),
+                 PRINT % (2, "$n")),
+            prog(FVAR % ("float64", "x", "0.0"), fop("div", "$x,0.0", "x"), VAR % ("n", "0"),
+                 cvt("cvttsd2si rax, xmm0", "$x", "n"), PRINT % (20, "$n")),
+            prog(FVAR % ("float64", "x", "0.0000000000000000000005"), VAR % ("n", "0"),
+                 cvt("cvttsd2si rax, xmm0", "$x", "n"), PRINT % (20, "$n")),     # 5e21: too big
+            prog(FVAR % ("float64", "x", "1.0"), FVAR % ("float32", "y", "0.0"),
+                 cvt("cvtsd2ss xmm0, xmm0", "$x", "y"), PRINT % (19, "$y")),
+            prog(FVAR % ("float32", "x", "1.0"), FVAR % ("float64", "y", "0.0"),
+                 cvt("cvtss2sd xmm0, xmm0", "$x", "y"), PRINT % (19, "$y")),
+            prog(FVAR % ("float32", "x", "2.5"), VAR % ("n", "0"), cvt("cvttss2si rax, xmm0", "$x", "n"),
+                 PRINT % (1, "$n")),
+        ):
+            with self.subTest(src.splitlines()[-2][:60]):
+                self.both(src)
+
+    def test_int_to_float32_rounds_once(self):
+        # build 2^53 + 2^29 + 1 = (2^24 + 1) * 2^29 + 1, convert it to float32 and back, and print it.
+        # Rounded straight to float32 (like the real cvtsi2ss) it becomes 2^53 + 2^30.
+        src = prog(VAR % ("a", "8"), MUL % ("$a,$a", "a"), MUL % ("$a,$a", "a"), MUL % ("$a,$a", "a"),  # 2^24
+                   VAR % ("b", "$a"), MUL % ("$b,8", "b"), MUL % ("$b,5", "b"),          # 5 means 2
+                   ADD % ("$a,1", "a"), MUL % ("$b,5", "b"),                               # b = 2^29
+                   MUL % ("$a,$b", "a"), ADD % ("$a,1", "a"),
+                   FVAR % ("float32", "f", "0.0"), cvt("cvtsi2ss xmm0, rax", "$a", "f"),
+                   VAR % ("d", "0"), cvt("cvttss2si rax, xmm0", "$f", "d"), PRINT % (16, "$d"))
+        out = self.both(src)
+        self.assertEqual(out.stdout, f"{2 ** 53 + 2 ** 30}\n")
+
+    def test_decimal_mistakes(self):
+        for src in (
+            prog(FVAR % ("float64", "x", "0")),
+            prog(VAR % ("x", "1.0")),
+            prog(FVAR % ("float64", "x", "1.0"), FVAR % ("float32", "y", "$x")),
+            prog(FVAR % ("float64", "x", "1.0"), fop("add", "$x,1", "x")),
+            prog(FVAR % ("float32", "x", "1.0"), fop("add", "$x,$x", "x")),
+            prog(FVAR % ("float64", "x", "1.0"), VAR % ("n", "0"), ADD % ("$x,1", "n")),
+            prog(LIST % ("int64", "8"), STORE % "$xs,0,1.0"),
+            prog(TEXT % ("5", "s", '[0null]"I"'), FVAR % ("float64", "x", "1.0"),
+                 TEXT % ("8", "t", '[0null]"FEDCBA"'), libc("strcat", "$s,$t"), fop("add", "$x,$x", "x")),
+        ):
+            with self.subTest(src.splitlines()[-2][:60]):
+                self.both(src)
+
+    def test_decimal_parameters(self):
+        dbl = " ".join(f"{ord(c):08b}" for c in "dbl")
+        self.both(prog(DEF % (dbl, "rdi:$a"), fop("add", "$a,$a", "a"), RET % "$a", END,
+                       FVAR % ("float64", "x", "1.0"), CALL % ("dbl", dbl, "$x", "x"), PRINT % (3, "$x")))
+
+    # ---- imports
+
+    def test_import_error_line_is_the_same(self):
+        lib = pathlib.Path(self.tmp.name) / "lib" / "sq.pmeh"
+        lib.parent.mkdir(exist_ok=True)
+        lib.write_text("\n".join([*square_def(body=[MUL % ("$a,$a", "a")]), pmeh.VALIDATION_LINE]) + "\n")
+        name = " ".join(f"{ord(c):08b}" for c in "lib/sq.pmeh"[::-1])
+        out = self.both(prog("<<import<FILE>>path:{%s}>>/>>" % name, VAR % ("x", "5"),
+                             CALL % ("square", SQ, "$x", "x")))
+        self.assertIn("(lib/sq.pmeh, line 3)", out.stderr)
 
     def test_rand(self):
         self.both(prog(VAR % ("x", "0"), RAND % (4, "x")))
