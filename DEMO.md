@@ -13,6 +13,7 @@ or compile it into a real program first:
     pmeh -o guess examples/guess.pmeh
     ./guess
 
+A game might go like this (the secret here happened to be 63):
 ```
 GUESS MY NUMBER!
 IT IS 1-99.
