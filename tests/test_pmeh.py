@@ -38,12 +38,22 @@ class Examples(unittest.TestCase):
         self.assertEqual(run_file("three.pmeh"), "THREE = 3\n")
 
     def test_guess_demo(self):
-        intro, prompt = "GUESS MY NUMBER!\n", "YOUR GUESS?\n"
-        self.assertEqual(run_file("guess.pmeh", "50\n80\n64\n"),
-                         intro + prompt + "TOO LOW\n" + prompt + "TOO HIGH\n" + prompt
-                         + "CORRECT!\nYOU WON! TRIES:\n3\n")
-        out = run_file("guess.pmeh", "1\n" * 11 + "64\n")
-        self.assertTrue(out.endswith("YOU WON! TRIES:\n12\n"))
+        import random
+        counting_up = "".join(f"{n}\n" for n in range(1, 100))
+        secrets = set()
+        for seed in range(30):
+            out = io.StringIO()
+            source = (ROOT / "examples" / "guess.pmeh").read_text()
+            pmeh.Machine(pmeh.parse(source), out, io.StringIO(counting_up), random.Random(seed)).run()
+            lines = out.getvalue().splitlines()
+            secret = int(lines[-1])                      # counting up from 1: tries == secret
+            self.assertTrue(1 <= secret <= 99)
+            self.assertEqual(lines[:2], ["GUESS MY NUMBER!", "IT IS 1-99."])
+            self.assertEqual(lines.count("TOO LOW"), secret - 1)
+            self.assertNotIn("TOO HIGH", lines)
+            self.assertEqual(lines[-3:-1], ["CORRECT!", "YOU WON! TRIES:"])
+            secrets.add(secret)
+        self.assertGreater(len(secrets), 10)               # really random
 
     def test_big_or_small(self):
         self.assertEqual(run_file("big_or_small.pmeh"), "BIG\n")

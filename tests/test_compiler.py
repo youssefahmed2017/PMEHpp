@@ -100,9 +100,20 @@ class CompilerMatchesInterpreter(unittest.TestCase):
                 self.example("double", typed)
 
     def test_guess(self):
-        self.assertIn("TRIES:\n3", self.example("guess", "50\n80\n64\n").stdout)
-        self.example("guess", "1\n" * 11 + "64\n")
-        self.example("guess", "50\n")                       # runs out of input
+        # the secret is random, so check the game's rules instead of comparing outputs
+        exe = os.path.join(self.tmp.name, "guess")
+        subprocess.run([sys.executable, str(ROOT / "pmeh.py"), "-g", "-o", exe,
+                        str(ROOT / "examples" / "guess.pmeh")], check=True)
+        counting_up = "".join(f"{n}\n" for n in range(1, 100))
+        secrets = set()
+        for _ in range(20):
+            lines = subprocess.run([exe], input=counting_up, capture_output=True, text=True).stdout.splitlines()
+            secret = int(lines[-1])
+            self.assertTrue(1 <= secret <= 99)
+            self.assertEqual(lines.count("TOO LOW"), secret - 1)
+            secrets.add(secret)
+        self.assertGreater(len(secrets), 5)
+        self.example("guess", "")                           # no input at all: same punishment
 
     def test_dice_rolls_one_to_six(self):
         # random, so the two can't be compared: just check the compiled die is a fair-looking die

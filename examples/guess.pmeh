@@ -1,8 +1,18 @@
-<<definefunc<USER>>mco:{01110011 01110001 01110101 01100001 01110010 01100101}params:{rdi:$a}>>
-    <<startfunc<FROMBUILTIN><<asm:{imul rax, rbx}>>mco:{01101101 01110101 01101100}<<>>$a,$a<<into>>$a>>/>>
-    <<return<<asm:{ret}>>$a>>/>>
+<<COMMNT".++REDRAHNEVEEMHSINUP FO OMED A .REBMUN EHT SSEUG">>/>>
+<<COMMNT".EVRATS NAC ELBAIRAV ON EREHW OG YLNO YEHT OS ,ENIL A SA STNUOC TNEMMOC YREVE">>/>>
+<<definefunc<USER>>mco:{01110000 01101001 01100011 01101011}params:{}>>
+    <<COMMNT"99 OT 1 MORF REBMUN MODNAR A">>/>>
+    <<startvar<STACK>>type:{int64}name:{x}<<>>0>>/>>
+    <<startfunc<FROMBUILTIN><<asm:{mov rax, 318; lea rdi, [buf]; mov rsi, 8; mov rdx, 0; syscall}>>mco:{01110010 01100001 01101110 01100100}<<>><<into>>$x>>/>>
+    <<startfunc<FROMBUILTIN><<asm:{cqo; idiv rbx; mov rax, rdx}>>mco:{01101101 01101111 01100100}<<>>$x,66<<into>>$x>>/>>
+    <<startif<<asm:{cmp rax, rbx; jge skip}>>$x,0>>
+        <<startfunc<FROMBUILTIN><<asm:{imul rax, rbx}>>mco:{01101101 01110101 01101100}<<>>$x,-1<<into>>$x>>/>>
+    <<endif>>/>>
+    <<startfunc<FROMBUILTIN><<asm:{add rax, rbx}>>mco:{01100001 01100100 01100100}<<>>$x,1<<into>>$x>>/>>
+    <<return<<asm:{ret}>>$x>>/>>
 <<enddefine>>/>>
 <<definefunc<USER>>mco:{01110100 01110101 01110010 01101110}params:{rdi:$s,rsi:$t}>>
+    <<COMMNT".EVILA TI SPEEK TI GNISSAP :DESU REVEN SI T .SSEUG ENO">>/>>
     <<startfunc<FROMBUILTIN><<asm:{mov rax, 1; mov rdi, 1; lea rsi, [msg]; mov rdx, 11; syscall}>>mco:{01110000 01110010 01101001 01101110 01110100}<<>>"YOUR"[4word]"GUESS?">>/>>
     <<startvar<STACK>>type:{int64}name:{g}<<>>$s>>/>>
     <<startfunc<FROMBUILTIN><<asm:{mov rax, 0; mov rdi, 0; lea rsi, [buf]; mov rdx, 3; syscall}>>mco:{01110010 01100101 01100001 01100100}<<>><<into>>$g>>/>>
@@ -18,6 +28,7 @@
     <<return<<asm:{ret}>>$g>>/>>
 <<enddefine>>/>>
 <<definefunc<USER>>mco:{01110010 01100101 01110000 01101111 01110010 01110100}params:{rdi:$n}>>
+    <<COMMNT".SHTGNEL OWT OS ,STIGID 2 RO 1 .SEIRT EHT TNIRP">>/>>
     <<startfunc<FROMBUILTIN><<asm:{mov rax, 1; mov rdi, 1; lea rsi, [msg]; mov rdx, 15; syscall}>>mco:{01110000 01110010 01101001 01101110 01110100}<<>>"YOU"[3word]"WON!"[8word]"TRIES:">>/>>
     <<startif<<asm:{cmp rax, rbx; jge skip}>>$n,01>>
         <<startfunc<FROMBUILTIN><<asm:{mov rax, 1; mov rdi, 1; lea rsi, [msg]; mov rdx, 1; syscall}>>mco:{01110000 01110010 01101001 01101110 01110100}<<>>$n>>/>>
@@ -27,8 +38,9 @@
     <<return<<asm:{ret}>>$n>>/>>
 <<enddefine>>/>>
 <<startfunc<FROMBUILTIN><<asm:{mov rax, 1; mov rdi, 1; lea rsi, [msg]; mov rdx, 16; syscall}>>mco:{01110000 01110010 01101001 01101110 01110100}<<>>"GUESS"[5word]"MY"[8word]"NUMBER!">>/>>
-<<startvar<STACK>>type:{int64}name:{secret}<<>>8>>/>>
-<<startfunc<FROMUSER><<asm:{call square}>>mco:{01110011 01110001 01110101 01100001 01110010 01100101}<<>>$secret<<into>>$secret>>/>>
+<<startfunc<FROMBUILTIN><<asm:{mov rax, 1; mov rdi, 1; lea rsi, [msg]; mov rdx, 11; syscall}>>mco:{01110000 01110010 01101001 01101110 01110100}<<>>"IT"[2word]"IS"[5word]"1-99.">>/>>
+<<startvar<STACK>>type:{int64}name:{secret}<<>>0>>/>>
+<<startfunc<FROMUSER><<asm:{call pick}>>mco:{01110000 01101001 01100011 01101011}<<>><<into>>$secret>>/>>
 <<startvar<STACK>>type:{int64}name:{guess}<<>>0>>/>>
 <<startvar<STACK>>type:{int64}name:{tries}<<>>0>>/>>
 <<startloop<<asm:{cmp rax, rbx; je end}>>$guess,$secret>>
