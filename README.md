@@ -63,12 +63,16 @@ real where it can be: the jumps, `idiv`, `getrandom`…), then builds it with `a
 (from binutils: `sudo pacman -S binutils` on Arch). Use `-S` to see the assembly.
 
 - **Every rule still applies** in the compiled program: forgetful variables, frozen variables
-  during calls, overflow checks, exact print lengths. Error reports are scrambled while compiling
-  and baked into the program (`-g` makes them plain).
+  during calls, overflow checks, exact print lengths, garbage in new lists and text, unterminated
+  text reading into garbage, and buffer overflows that corrupt the variables declared after them.
+  Error reports are scrambled while compiling and baked into the program (`-g` makes them plain).
+- **Everything compiles**: numbers, text, lists, files, functions, input and the C library functions.
+  Lists, text and garbage live on a heap the program grows itself with the `brk` system call.
 - **It's fast.** Counting to 200,000 takes 0.69 s in the interpreter and 0.002 s compiled.
-- **Not supported yet:** lists, text, files and C library functions. The compiler says so and
-  the interpreter still runs those programs.
-- Random numbers come from the real `getrandom`, so `-s` doesn't make them repeat in compiled programs.
+- `-s N` makes the garbage repeat in compiled programs too. Numbers from `rand` always come from
+  the real `getrandom`, so they never repeat.
+- A few error messages are worded more simply when compiled (for example, they don't quote the
+  garbage), but the punished line is always the same as in the interpreter.
 
 ## Tests
 

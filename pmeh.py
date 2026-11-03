@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 
 # ---------------------------------------------------------------- constants
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 VALIDATION_LINE = ('<EXCPROGRAM>VALIDATE:COMMNT"I\'d rather die than code in '
                    'this programming language"[NOMERCYGRANTED]')
